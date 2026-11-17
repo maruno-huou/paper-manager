@@ -146,6 +146,13 @@ function App() {
   const [aiHeightPercent, setAiHeightPercent] = useState(50);
   const [isDraggingVertical, setIsDraggingVertical] = useState(false);
   const rightPaneRef = useRef(null);
+  const rightPaneRef = useRef(null);
+  // ★ ここから5行を追加
+  const chatEndRef = useRef(null);
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat, loading]);
+
   
   const [activeFolder, setActiveFolder] = useState("");
   const [customFolders, setCustomFolders] = useState([]);
@@ -1267,6 +1274,7 @@ function App() {
                     </div>
                   ))}
                   {loading && <div style={{ color: '#666', fontSize: '13px', marginTop: '6px' }}>⏳ {loadingMessage}</div>}
+		 <div ref={chatEndRef} />	
                 </div>
                 <div style={{ display: 'flex', marginTop: '10px' }}>
                   <input
