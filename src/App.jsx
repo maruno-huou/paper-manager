@@ -146,8 +146,6 @@ function App() {
   const [aiHeightPercent, setAiHeightPercent] = useState(50);
   const [isDraggingVertical, setIsDraggingVertical] = useState(false);
   const rightPaneRef = useRef(null);
-  const rightPaneRef = useRef(null);
-  // ★ ここから5行を追加
   const chatEndRef = useRef(null);
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
