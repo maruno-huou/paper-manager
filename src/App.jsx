@@ -1,15 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { initializeFirestore, collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-// ★ 自分専用モードに切り替える合言葉
 const SECRET_PASSCODE = import.meta.env.VITE_SECRET_PASSCODE || "demo";
 
-// ★ デモ用サンプル論文データ
 const DEMO_PAPERS = [
   {
     id: "demo-1",
@@ -34,46 +32,36 @@ const DEMO_PAPERS = [
   }
 ];
 
+const HIGHLIGHT_COLORS = [
+  { name: "黄", code: "#fff3a3" },
+  { name: "緑", code: "#c8f7c5" },
+  { name: "ピンク", code: "#ffd1dc" }
+];
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
 };
 const app = initializeApp(firebaseConfig);
-const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-});
-
+const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
 
-// localStorage 読み書きヘルパー
 const loadStorage = (key, fallback) => {
   try {
     const raw = localStorage.getItem(key);
     return raw !== null ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+  } catch { return fallback; }
 };
-
 const saveStorage = (key, value) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.warn("Storage save failed:", e);
-  }
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
 };
 
-// iOS 判定ヘルパー（iPhone / iPadOS のデスクトップモード含む）
 const detectIOS = () => {
   if (typeof navigator === "undefined") return false;
-  return (
-    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 };
 
-// HTMLエスケープ（別タブ出力時の数式や記号崩れ防止）
 const escapeHtml = (str = "") =>
   str
     .replace(/&/g, "&" + "amp;")
@@ -81,7 +69,33 @@ const escapeHtml = (str = "") =>
     .replace(/>/g, "&" + "gt;")
     .replace(/"/g, "&" + "quot;")
     .replace(/'/g, "&" + "#39;");
-// ★ PDFから読みやすい段落テキストを抽出する関数（リーディングモード用）
+
+// テキストをハイライト位置で分割する共通ヘルパー
+const splitTextByHighlights = (text, paraHighlights) => {
+  if (!paraHighlights || paraHighlights.length === 0) return [{ text, highlight: null }];
+  let segments = [{ text, highlight: null }];
+  for (const hl of paraHighlights) {
+    if (!hl.text) continue;
+    const next = [];
+    for (const seg of segments) {
+      if (seg.highlight) { next.push(seg); continue; }
+      const pos = seg.text.indexOf(hl.text);
+      if (pos === -1) {
+        next.push(seg);
+      } else {
+        if (pos > 0) next.push({ text: seg.text.slice(0, pos), highlight: null });
+        next.push({ text: hl.text, highlight: hl });
+        if (pos + hl.text.length < seg.text.length) {
+          next.push({ text: seg.text.slice(pos + hl.text.length), highlight: null });
+        }
+      }
+    }
+    segments = next;
+  }
+  return segments;
+};
+
+// PDFから段落テキストを抽出（リーディングモード用）
 const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
   const response = await fetch(pdfUrl);
   const arrayBuffer = await response.arrayBuffer();
@@ -92,7 +106,6 @@ const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
     if (onProgress) onProgress(pageNum, pdf.numPages);
     const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
-
     const paragraphs = [];
     let currentPara = "";
     let lastY = null;
@@ -109,231 +122,113 @@ const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
           if (currentPara.trim()) paragraphs.push(currentPara.trim());
           currentPara = str;
         } else if (yDiff > fontHeight * 0.45) {
-          // 行末ハイフンによる単語分断を結合
-          if (currentPara.endsWith("-")) {
-            currentPara = currentPara.slice(0, -1) + str.trimStart();
-          } else {
-            currentPara += " " + str;
-          }
+          currentPara = currentPara.endsWith("-") ? currentPara.slice(0, -1) + str.trimStart() : currentPara + " " + str;
         } else {
           currentPara += str;
         }
       } else {
         currentPara += str;
       }
-
       if (y !== null) lastY = y;
     }
-
     if (currentPara.trim()) paragraphs.push(currentPara.trim());
     pages.push({ pageNum, paragraphs });
   }
-
   return pages;
 };
 
-// ★ 別タブ用のスタンドアロン・リーディングモードHTMLを生成
-const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontSize = 17) => {
+// 別タブ用リーディングモードHTML生成（マーカー反映対応）
+const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontSize = 17, highlights = []) => {
   const safeTitle = escapeHtml(title || "Reading Mode");
-  const bodyHtml = pages
-    .map(
-      (p) => `
-      <section class="page-block">
-        <div class="page-label">Page ${p.pageNum}</div>
-        ${p.paragraphs.map((para) => `<p>${escapeHtml(para)}</p>`).join("\n")}
-      </section>`
-    )
-    .join("\n");
+  const bodyHtml = pages.map((p) => {
+    const parasHtml = p.paragraphs.map((para, idx) => {
+      const pHls = highlights.filter(h => h.pageNum === p.pageNum && h.paraIdx === idx);
+      const segs = splitTextByHighlights(para, pHls);
+      const inner = segs.map(s =>
+        s.highlight
+          ? `<mark style="background:${s.highlight.color};color:#1f2328;padding:0 2px;border-radius:3px;">${escapeHtml(s.text)}</mark>`
+          : escapeHtml(s.text)
+      ).join("");
+      return `<p>${inner}</p>`;
+    }).join("\n");
+    return `<section class="page-block"><div class="page-label">Page ${p.pageNum}</div>${parasHtml}</section>`;
+  }).join("\n");
 
   return `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>📖 ${safeTitle}</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --text: #1f2328;
-      --sub: #656d76;
-      --bar-bg: rgba(248, 249, 250, 0.94);
-      --border: #e1e4e8;
-      --btn-bg: #ffffff;
-    }
-    body[data-theme="sepia"] {
-      --bg: #f6efe2;
-      --text: #3b2f23;
-      --sub: #7a6855;
-      --bar-bg: rgba(239, 229, 211, 0.95);
-      --border: #dfd1b8;
-      --btn-bg: #fbf6ec;
-    }
-    body[data-theme="dark"] {
-      --bg: #16181c;
-      --text: #e6e8eb;
-      --sub: #9aa0a6;
-      --bar-bg: rgba(28, 31, 38, 0.95);
-      --border: #2f343d;
-      --btn-bg: #242830;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: Georgia, "Hiragino Mincho ProN", "Yu Mincho", -apple-system, BlinkMacSystemFont, serif;
-      transition: background 0.2s, color 0.2s;
-      -webkit-font-smoothing: antialiased;
-    }
-    .toolbar {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 10px 16px;
-      padding-top: max(10px, env(safe-area-inset-top));
-      background: var(--bar-bg);
-      backdrop-filter: blur(8px);
-      border-bottom: 1px solid var(--border);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    .toolbar-title {
-      font-size: 13px;
-      font-weight: 700;
-      max-width: 48vw;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-    button {
-      background: var(--btn-bg);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    button:active { opacity: 0.7; }
-    main {
-      max-width: 740px;
-      margin: 0 auto;
-      padding: 28px 20px 80px 20px;
-      font-size: ${initialFontSize}px;
-      line-height: 1.85;
-      letter-spacing: 0.01em;
-    }
-    h1 {
-      font-size: 1.55em;
-      line-height: 1.35;
-      margin: 0 0 28px 0;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    .page-block {
-      margin-bottom: 32px;
-    }
-    .page-label {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--sub);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin: 24px 0 12px 0;
-      padding-bottom: 4px;
-      border-bottom: 1px dashed var(--border);
-    }
-    p {
-      margin: 0 0 1.05em 0;
-      word-break: break-word;
-    }
-  </style>
-</head>
+<html lang="ja"><head><meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>📖 ${safeTitle}</title>
+<style>
+  :root { --bg:#fff; --text:#1f2328; --sub:#656d76; --bar:rgba(248,249,250,.94); --bd:#e1e4e8; --btn:#fff; }
+  body[data-theme="sepia"] { --bg:#f6efe2; --text:#3b2f23; --sub:#7a6855; --bar:rgba(239,229,211,.95); --bd:#dfd1b8; --btn:#fbf6ec; }
+  body[data-theme="dark"] { --bg:#16181c; --text:#e6e8eb; --sub:#9aa0a6; --bar:rgba(28,31,38,.95); --bd:#2f343d; --btn:#242830; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Georgia,"Hiragino Mincho ProN","Yu Mincho",serif; transition:background .2s,color .2s; }
+  .toolbar { position:sticky; top:0; z-index:100; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 16px; padding-top:max(10px,env(safe-area-inset-top)); background:var(--bar); backdrop-filter:blur(8px); border-bottom:1px solid var(--bd); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .toolbar-title { font-size:13px; font-weight:700; max-width:48vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .controls { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  button { background:var(--btn); color:var(--text); border:1px solid var(--bd); border-radius:6px; padding:6px 10px; font-size:13px; cursor:pointer; }
+  main { max-width:740px; margin:0 auto; padding:28px 20px 80px; font-size:${initialFontSize}px; line-height:1.85; }
+  h1 { font-size:1.55em; line-height:1.35; margin:0 0 28px; padding-bottom:16px; border-bottom:1px solid var(--bd); }
+  .page-block { margin-bottom:32px; }
+  .page-label { font-family:sans-serif; font-size:12px; font-weight:700; color:var(--sub); text-transform:uppercase; letter-spacing:.08em; margin:24px 0 12px; padding-bottom:4px; border-bottom:1px dashed var(--bd); }
+  p { margin:0 0 1.05em; word-break:break-word; }
+</style></head>
 <body data-theme="${initialTheme}">
   <header class="toolbar">
     <div class="toolbar-title">📖 ${safeTitle}</div>
     <div class="controls">
-     <button onclick="changeSize(-2)" style="font-size:11px;font-weight:bold;min-width:30px;">A</button>
-      <button onclick="changeSize(2)" style="font-size:17px;font-weight:bold;min-width:30px;">A</button>
+      <button onclick="changeSize(-2)">A-</button>
+      <button onclick="changeSize(2)">A+</button>
       <button onclick="setTheme('light')">☀️</button>
       <button onclick="setTheme('sepia')">📜</button>
       <button onclick="setTheme('dark')">🌙</button>
     </div>
   </header>
-  <main id="article">
-    <h1>${safeTitle}</h1>
-    ${bodyHtml}
-  </main>
+  <main id="article"><h1>${safeTitle}</h1>${bodyHtml}</main>
   <script>
-    let currentSize = ${initialFontSize};
-    function changeSize(delta) {
-      currentSize = Math.min(28, Math.max(13, currentSize + delta));
-      document.getElementById('article').style.fontSize = currentSize + 'px';
-    }
-    function setTheme(t) {
-      document.body.setAttribute('data-theme', t);
-    }
+    let s=${initialFontSize};
+    function changeSize(d){ s=Math.min(28,Math.max(13,s+d)); document.getElementById('article').style.fontSize=s+'px'; }
+    function setTheme(t){ document.body.setAttribute('data-theme',t); }
   </script>
-</body>
-</html>`;
+</body></html>`;
 };
 
 // IndexedDB（PDFローカル保存用）
-const openPdfDB = () => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("PaperManagerPDFs", 1);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore("pdfs");
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-};
-
+const openPdfDB = () => new Promise((resolve, reject) => {
+  const req = indexedDB.open("PaperManagerPDFs", 1);
+  req.onupgradeneeded = () => req.result.createObjectStore("pdfs");
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
 const savePdfLocally = async (paperId, file) => {
   const idb = await openPdfDB();
-  return new Promise((resolve, reject) => {
+  return new Promise((res, rej) => {
     const tx = idb.transaction("pdfs", "readwrite");
     tx.objectStore("pdfs").put(file, paperId);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
   });
 };
-
 const getPdfLocally = async (paperId) => {
   const idb = await openPdfDB();
-  return new Promise((resolve, reject) => {
+  return new Promise((res, rej) => {
     const tx = idb.transaction("pdfs", "readonly");
     const req = tx.objectStore("pdfs").get(paperId);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
   });
 };
-
 const deletePdfLocally = async (paperId) => {
   const idb = await openPdfDB();
-  const tx = idb.transaction("pdfs", "readwrite");
-  tx.objectStore("pdfs").delete(paperId);
+  idb.transaction("pdfs", "readwrite").objectStore("pdfs").delete(paperId);
 };
 
-// Gemini API 呼び出し（自動フォールバック付き）
+// Gemini API（フォールバック付き）
 const generateWithFallback = async (prompt, mode = "flash") => {
-  const modelsToTry =
-    mode === "pro"
-      ? ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
-      : ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
-
+  const modelsToTry = mode === "pro"
+    ? ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    : ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
   let lastError = null;
   for (const modelName of modelsToTry) {
     try {
@@ -343,16 +238,14 @@ const generateWithFallback = async (prompt, mode = "flash") => {
     } catch (error) {
       lastError = error;
       const msg = error.message || "";
-      if (msg.includes("503") || msg.includes("429") || msg.includes("404") || msg.includes("high demand")) {
-        continue;
-      }
+      if (msg.includes("503") || msg.includes("429") || msg.includes("404") || msg.includes("high demand")) continue;
       throw error;
     }
   }
   throw lastError;
 };
 
-// ★ iOS / モバイル対応：全ページをスクロール表示できる Canvas PDF ビューア
+// iOS用 Canvas PDF ビューア
 function PdfCanvasViewer({ pdfUrl }) {
   const containerRef = useRef(null);
   const [rendering, setRendering] = useState(true);
@@ -366,53 +259,36 @@ function PdfCanvasViewer({ pdfUrl }) {
       setRendering(true);
       setErrorMsg("");
       containerRef.current.innerHTML = "";
-
       try {
-        const response = await fetch(pdfUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const res = await fetch(pdfUrl);
+        const pdf = await pdfjsLib.getDocument({ data: await res.arrayBuffer() }).promise;
         if (cancelled) return;
         setPageCount(pdf.numPages);
-
         const containerWidth = Math.max((containerRef.current.clientWidth || window.innerWidth) - 24, 280);
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           if (cancelled) return;
           const page = await pdf.getPage(pageNum);
-          const unscaledViewport = page.getViewport({ scale: 1 });
-          const scale = containerWidth / unscaledViewport.width;
+          const scale = containerWidth / page.getViewport({ scale: 1 }).width;
           const viewport = page.getViewport({ scale });
-
           const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
+          const ctx = canvas.getContext("2d");
           canvas.width = Math.floor(viewport.width * dpr);
           canvas.height = Math.floor(viewport.height * dpr);
-          canvas.style.width = `${Math.floor(viewport.width)}px`;
-          canvas.style.height = `${Math.floor(viewport.height)}px`;
-          canvas.style.display = "block";
-          canvas.style.margin = "0 auto 12px auto";
-          canvas.style.boxShadow = "0 2px 6px rgba(0,0,0,0.12)";
-          canvas.style.backgroundColor = "#fff";
-
-          context.scale(dpr, dpr);
+          canvas.style.cssText = `width:${Math.floor(viewport.width)}px;height:${Math.floor(viewport.height)}px;display:block;margin:0 auto 12px;box-shadow:0 2px 6px rgba(0,0,0,.12);background:#fff;`;
+          ctx.scale(dpr, dpr);
           containerRef.current.appendChild(canvas);
-          await page.render({ canvasContext: context, viewport }).promise;
+          await page.render({ canvasContext: ctx, viewport }).promise;
         }
       } catch (err) {
-        if (!cancelled) {
-          console.error("PDF canvas render error:", err);
-          setErrorMsg("PDFの描画に失敗しました。");
-        }
+        if (!cancelled) setErrorMsg("PDFの描画に失敗しました。");
       } finally {
         if (!cancelled) setRendering(false);
       }
     };
-
     renderAllPages();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [pdfUrl]);
 
   return (
@@ -422,21 +298,8 @@ function PdfCanvasViewer({ pdfUrl }) {
           ⏳ PDFを読み込み中... {pageCount > 0 ? `(全 ${pageCount} ページ)` : ""}
         </div>
       )}
-      <div
-        ref={containerRef}
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          WebkitOverflowScrolling: 'touch',
-          padding: '12px',
-          boxSizing: 'border-box'
-        }}
-      />
-      {errorMsg && (
-        <div style={{ padding: '16px', textAlign: 'center', color: '#d9534f', fontSize: '13px' }}>
-          {errorMsg}
-        </div>
-      )}
+      <div ref={containerRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '12px', boxSizing: 'border-box' }} />
+      {errorMsg && <div style={{ padding: '16px', textAlign: 'center', color: '#d9534f', fontSize: '13px' }}>{errorMsg}</div>}
     </div>
   );
 }
@@ -447,10 +310,7 @@ function App() {
   const [mobileTab, setMobileTab] = useState(() => loadStorage("pm_mobileTab", "pdf"));
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  const [isPersonalMode, setIsPersonalMode] = useState(() => {
-    return localStorage.getItem("paperManagerUnlocked") === "true";
-  });
-
+  const [isPersonalMode, setIsPersonalMode] = useState(() => localStorage.getItem("paperManagerUnlocked") === "true");
   const [papers, setPapers] = useState([]);
   const [selectedPaper, setSelectedPaper] = useState(null);
   const [chatHistoryMap, setChatHistoryMap] = useState(() => loadStorage("pm_chats", {}));
@@ -459,7 +319,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // メモ機能用の状態
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
 
@@ -473,21 +332,21 @@ function App() {
   const [currentPdfUrl, setCurrentPdfUrl] = useState(null);
   const [savedPdfIds, setSavedPdfIds] = useState({});
 
-  // ★ リーディングモード用の状態
+  // リーディングモード＆マーカー状態
   const [isReadingMode, setIsReadingMode] = useState(false);
   const [readingPages, setReadingPages] = useState(null);
   const [readingLoading, setReadingLoading] = useState(false);
   const [readingProgress, setReadingProgress] = useState("");
   const [readingTheme, setReadingTheme] = useState(() => loadStorage("pm_readingTheme", "light"));
   const [readingFontSize, setReadingFontSize] = useState(() => loadStorage("pm_readingFontSize", 16));
+  const [highlights, setHighlights] = useState([]);
+  const lastSelectionRef = useRef(null);
 
-  // レイアウト状態（前回サイズを復元）
+  // レイアウト状態
   const [sidebarWidth, setSidebarWidth] = useState(() => loadStorage("pm_sidebarWidth", 280));
   const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
-
   const [leftWidth, setLeftWidth] = useState(() => loadStorage("pm_leftWidth", 50));
   const [isDragging, setIsDragging] = useState(false);
-
   const [aiHeightPercent, setAiHeightPercent] = useState(() => loadStorage("pm_aiHeightPercent", 50));
   const [isDraggingVertical, setIsDraggingVertical] = useState(false);
   const rightPaneRef = useRef(null);
@@ -497,33 +356,52 @@ function App() {
   const [customFolders, setCustomFolders] = useState(() => loadStorage("pm_customFolders", []));
   const [expandedFolders, setExpandedFolders] = useState(() => loadStorage("pm_expandedFolders", {}));
   const [openMenuId, setOpenMenuId] = useState(null);
-
   const [draggedItem, setDraggedItem] = useState(null);
   const [dragOverTarget, setDragOverTarget] = useState(null);
 
   const hasRestoredForMode = useRef(null);
   const isSidebarOpen = sidebarWidth > 0;
 
-  // 画面リサイズ監視（iPad回転・スマホ判定）
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // チャット更新時の自動スクロール
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat, loading, mobileTab]);
 
-  // PDFが切り替わったらリーディングキャッシュをリセット
   useEffect(() => {
     setReadingPages(null);
     setIsReadingMode(false);
     setReadingProgress("");
   }, [currentPdfUrl]);
 
-  // 各種設定・状態の自動保存（次回起動時に復元するため）
+  // iOSでもボタン押下前に選択テキストを保持するリスナー
+  useEffect(() => {
+    if (!isReadingMode) return;
+    const handleSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      const text = sel.toString().trim();
+      if (!text) return;
+      const node = sel.anchorNode;
+      const el = node?.nodeType === 3 ? node.parentElement : node;
+      const pEl = el?.closest?.('p[data-page]');
+      if (pEl) {
+        lastSelectionRef.current = {
+          pageNum: Number(pEl.dataset.page),
+          paraIdx: Number(pEl.dataset.para),
+          text
+        };
+      }
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [isReadingMode]);
+
+  // 設定の自動保存
   useEffect(() => saveStorage("pm_aiLanguage", aiLanguage), [aiLanguage]);
   useEffect(() => saveStorage("pm_sidebarWidth", sidebarWidth), [sidebarWidth]);
   useEffect(() => saveStorage("pm_leftWidth", leftWidth), [leftWidth]);
@@ -536,24 +414,67 @@ function App() {
   useEffect(() => saveStorage("pm_readingTheme", readingTheme), [readingTheme]);
   useEffect(() => saveStorage("pm_readingFontSize", readingFontSize), [readingFontSize]);
 
-  // ★ アプリ内リーディングモードへ切り替え
-  const handleToggleReadingMode = async () => {
-    if (isReadingMode) {
-      setIsReadingMode(false);
+  // マーカーの保存・同期
+  const syncHighlights = async (paperId, nextHighlights) => {
+    setHighlights(nextHighlights);
+    if (!paperId) return;
+    setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, highlights: nextHighlights } : p)));
+    setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, highlights: nextHighlights } : prev));
+    if (isPersonalMode) {
+      try {
+        await updateDoc(doc(db, "papers", paperId), { highlights: nextHighlights });
+      } catch (e) {
+        console.error("Failed to sync highlights:", e);
+      }
+    }
+  };
+
+  // 選択中テキストにマーカーを追加
+  const handleAddHighlight = async (colorCode) => {
+    if (!selectedPaper) return;
+    let target = null;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) {
+      const node = sel.anchorNode;
+      const el = node?.nodeType === 3 ? node.parentElement : node;
+      const pEl = el?.closest?.('p[data-page]');
+      if (pEl) {
+        target = { pageNum: Number(pEl.dataset.page), paraIdx: Number(pEl.dataset.para), text: sel.toString().trim() };
+      }
+    }
+    if (!target) target = lastSelectionRef.current;
+
+    if (!target || !target.text) {
+      alert("先にリーディングモード内の文章をなぞって選択してください。");
       return;
     }
+
+    const newHl = { id: `hl-${Date.now()}`, ...target, color: colorCode };
+    const nextHighlights = [...highlights, newHl];
+    lastSelectionRef.current = null;
+    if (sel) sel.removeAllRanges();
+    await syncHighlights(selectedPaper.id, nextHighlights);
+  };
+
+  // マーカーを削除
+  const handleRemoveHighlight = async (hlId) => {
+    if (!selectedPaper) return;
+    if (!window.confirm("このマーカーを削除しますか？")) return;
+    const nextHighlights = highlights.filter(h => h.id !== hlId);
+    await syncHighlights(selectedPaper.id, nextHighlights);
+  };
+
+  // リーディングモード切替
+  const handleToggleReadingMode = async () => {
+    if (isReadingMode) { setIsReadingMode(false); return; }
     setIsReadingMode(true);
     if (!currentPdfUrl || readingPages) return;
-
     setReadingLoading(true);
     setReadingProgress("PDFからテキストを抽出中...");
     try {
-      const pages = await extractReadingPagesFromPdf(currentPdfUrl, (cur, total) => {
-        setReadingProgress(`ページを変換中 (${cur} / ${total})...`);
-      });
+      const pages = await extractReadingPagesFromPdf(currentPdfUrl, (cur, total) => setReadingProgress(`ページを変換中 (${cur} / ${total})...`));
       setReadingPages(pages);
     } catch (err) {
-      console.error("Reading mode extraction failed:", err);
       alert("リーディングモードへの変換に失敗しました: " + err.message);
       setIsReadingMode(false);
     } finally {
@@ -562,72 +483,66 @@ function App() {
     }
   };
 
-  // ★ 別タブでリーディングモードを開く（Windows & iOS Safari 両対応）
+  // 別タブでリーディングモードを開く
   const handleOpenReadingNewTab = async () => {
     const title = selectedPaper?.title || "Reading Mode";
-
-    // iOS Safariのポップアップブロック回避のため、クリック直後に同期的に空タブを開く
     const newWin = window.open("", "_blank");
     if (!newWin) {
       alert("ポップアップがブロックされました。ブラウザの設定でポップアップを許可してください。");
       return;
     }
-
     newWin.document.open();
-    newWin.document.write(
-      `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>読み込み中...</title></head><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#555;"><div>⏳ リーディングモードを準備しています...</div></body></html>`
-    );
+    newWin.document.write(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>読み込み中...</title></head><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#555;"><div>⏳ リーディングモードを準備しています...</div></body></html>`);
     newWin.document.close();
 
     try {
       let pagesToShow = readingPages;
-
       if (!pagesToShow && currentPdfUrl) {
         pagesToShow = await extractReadingPagesFromPdf(currentPdfUrl);
         setReadingPages(pagesToShow);
       } else if (!pagesToShow && selectedPaper?.abstract) {
-        // PDFがない論文（デモ論文など）でもAbstract＋メモをリーディング表示可能に
-        pagesToShow = [
-          {
-            pageNum: 1,
-            paragraphs: [
-              ...(selectedPaper.abstract || "").split("\n").filter(Boolean),
-              ...(memoText ? ["--- Notes ---", ...memoText.split("\n").filter(Boolean)] : [])
-            ]
-          }
-        ];
+        pagesToShow = [{
+          pageNum: 1,
+          paragraphs: [
+            ...(selectedPaper.abstract || "").split("\n").filter(Boolean),
+            ...(memoText ? ["--- Notes ---", ...memoText.split("\n").filter(Boolean)] : [])
+          ]
+        }];
       }
-
       if (!pagesToShow || pagesToShow.length === 0) {
         newWin.close();
         alert("表示できるPDFまたはテキストがありません。");
         return;
       }
-
-      const html = buildReadingModeHtml(title, pagesToShow, readingTheme, readingFontSize);
+      const html = buildReadingModeHtml(title, pagesToShow, readingTheme, readingFontSize, highlights);
       newWin.document.open();
       newWin.document.write(html);
       newWin.document.close();
     } catch (err) {
-      console.error("Failed to open reading mode tab:", err);
       newWin.close();
       alert("別タブでのリーディングモード生成に失敗しました: " + err.message);
     }
   };
 
-  // チャット更新ヘルパー（現在の論文のチャット履歴も同時に保存）
-  const updateChatForPaper = (paperId, newChatArray) => {
+  // チャット更新＆Firestore同期
+  const updateChatForPaper = async (paperId, newChatArray) => {
     setChat(newChatArray);
-    if (paperId) {
-      setChatHistoryMap(prev => ({ ...prev, [paperId]: newChatArray }));
+    if (!paperId) return;
+    setChatHistoryMap(prev => ({ ...prev, [paperId]: newChatArray }));
+    setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, chat: newChatArray } : p)));
+    setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, chat: newChatArray } : prev));
+    if (isPersonalMode) {
+      try {
+        await updateDoc(doc(db, "papers", paperId), { chat: newChatArray });
+      } catch (error) {
+        console.error("Failed to sync chat to Firestore:", error);
+      }
     }
   };
 
-  // 合言葉でモード切り替え
   const handleToggleMode = () => {
     if (isPersonalMode) {
-      const ok = window.confirm("デモモード（面接官・閲覧者向け表示）に戻しますか？");
-      if (ok) {
+      if (window.confirm("デモモード（面接官・閲覧者向け表示）に戻しますか？")) {
         localStorage.removeItem("paperManagerUnlocked");
         hasRestoredForMode.current = null;
         setIsPersonalMode(false);
@@ -648,57 +563,25 @@ function App() {
     }
   };
 
-  // マウス・タッチ両対応のリサイズ処理
   const handlePointerMove = (clientX, clientY) => {
     if (isDraggingSidebar) {
-      if (clientX < 80) {
-        setSidebarWidth(0);
-      } else {
-        setSidebarWidth(Math.min(Math.max(clientX, 160), 520));
-      }
+      setSidebarWidth(clientX < 80 ? 0 : Math.min(Math.max(clientX, 160), 520));
     }
-
     if (isDragging) {
       const leftAreaWidth = isSidebarOpen ? sidebarWidth + 6 : 40;
-      const resizerWidth = 6;
-      const availableWidth = window.innerWidth - leftAreaWidth - resizerWidth;
+      const availableWidth = window.innerWidth - leftAreaWidth - 6;
       if (availableWidth > 0) {
-        const rawWidth = ((clientX - leftAreaWidth) / availableWidth) * 100;
-        if (rawWidth >= 95) {
-          setLeftWidth(100);
-        } else if (rawWidth >= 20) {
-          setLeftWidth(rawWidth);
-        } else {
-          setLeftWidth(20);
-        }
+        const raw = ((clientX - leftAreaWidth) / availableWidth) * 100;
+        setLeftWidth(raw >= 95 ? 100 : raw >= 20 ? raw : 20);
       }
     }
-
     if (isDraggingVertical && rightPaneRef.current) {
       const rect = rightPaneRef.current.getBoundingClientRect();
-      const resizerHeight = 6;
-      const availableHeight = rect.height - resizerHeight;
+      const availableHeight = rect.height - 6;
       if (availableHeight > 0) {
-        const rawHeight = ((clientY - rect.top) / availableHeight) * 100;
-        if (rawHeight <= 5) {
-          setAiHeightPercent(0);
-        } else if (rawHeight >= 95) {
-          setAiHeightPercent(100);
-        } else {
-          setAiHeightPercent(rawHeight);
-        }
+        const raw = ((clientY - rect.top) / availableHeight) * 100;
+        setAiHeightPercent(raw <= 5 ? 0 : raw >= 95 ? 100 : raw);
       }
-    }
-  };
-
-  const handleMouseMove = (e) => {
-    handlePointerMove(e.clientX, e.clientY);
-  };
-
-  const handleTouchMove = (e) => {
-    if (!isDraggingSidebar && !isDragging && !isDraggingVertical) return;
-    if (e.touches.length > 0) {
-      handlePointerMove(e.touches[0].clientX, e.touches[0].clientY);
     }
   };
 
@@ -711,10 +594,7 @@ function App() {
   const checkSavedPdfs = async (papersList) => {
     const statusMap = {};
     for (const p of papersList) {
-      try {
-        const file = await getPdfLocally(p.id);
-        if (file) statusMap[p.id] = true;
-      } catch (e) {}
+      try { if (await getPdfLocally(p.id)) statusMap[p.id] = true; } catch (e) {}
     }
     setSavedPdfIds(statusMap);
   };
@@ -726,18 +606,17 @@ function App() {
       return DEMO_PAPERS;
     }
     try {
-      const querySnapshot = await getDocs(collection(db, "papers"));
-      const papersData = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setPapers(papersData);
-      await checkSavedPdfs(papersData);
-      return papersData;
+      const snap = await getDocs(collection(db, "papers"));
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setPapers(data);
+      await checkSavedPdfs(data);
+      return data;
     } catch (error) {
       console.error("Failed to fetch data", error);
       return [];
     }
   };
 
-  // ★ 起動時・モード切替時にデータを読み込み、前回作業していた論文を自動復元
   useEffect(() => {
     const init = async () => {
       const loadedPapers = await fetchPapers();
@@ -747,9 +626,7 @@ function App() {
         const lastId = loadStorage(`pm_lastPaperId_${modeKey}`, null);
         if (lastId) {
           const target = loadedPapers.find(p => p.id === lastId);
-          if (target) {
-            handleSelectPaper(target, { isRestoring: true });
-          }
+          if (target) handleSelectPaper(target, { isRestoring: true });
         }
       }
     };
@@ -762,7 +639,6 @@ function App() {
     return () => window.removeEventListener('click', closeMenu);
   }, []);
 
-  // メモの保存処理
   const handleSaveMemo = async (paperId, textToSave) => {
     if (!paperId) return;
     if (!isPersonalMode) {
@@ -771,7 +647,6 @@ function App() {
       setMemoStatus("Saved (Demo) ✓");
       return;
     }
-
     setMemoStatus("Saving...");
     try {
       await updateDoc(doc(db, "papers", paperId), { memo: textToSave });
@@ -779,133 +654,86 @@ function App() {
       setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, memo: textToSave } : prev));
       setMemoStatus("Saved ✓");
     } catch (error) {
-      console.error("Failed to save memo:", error);
       setMemoStatus("Save failed");
     }
   };
 
-  // 入力が止まって1.2秒後に自動保存
   useEffect(() => {
     if (!selectedPaper) return;
-    const savedMemo = selectedPaper.memo || "";
-    if (memoText === savedMemo) return;
-
+    if (memoText === (selectedPaper.memo || "")) return;
     setMemoStatus("Editing...");
-    const timer = setTimeout(() => {
-      handleSaveMemo(selectedPaper.id, memoText);
-    }, 1200);
-
+    const timer = setTimeout(() => handleSaveMemo(selectedPaper.id, memoText), 1200);
     return () => clearTimeout(timer);
   }, [memoText, selectedPaper]);
 
   const getAllFolderPaths = () => {
-    const rawSet = new Set([
-      ...customFolders,
-      ...papers.map(p => p.folder || "Uncategorized")
-    ]);
+    const rawSet = new Set([...customFolders, ...papers.map(p => p.folder || "Uncategorized")]);
     const fullSet = new Set();
     rawSet.forEach(path => {
       if (!path || path === "All") return;
-      const parts = path.split('/');
-      let current = "";
-      parts.forEach((part, idx) => {
-        current = idx === 0 ? part : `${current}/${part}`;
-        fullSet.add(current);
+      let cur = "";
+      path.split('/').forEach((part, idx) => {
+        cur = idx === 0 ? part : `${cur}/${part}`;
+        fullSet.add(cur);
       });
     });
-
-    return Array.from(fullSet).sort((a, b) => {
-      if (a === "Uncategorized") return 1;
-      if (b === "Uncategorized") return -1;
-      return a.localeCompare(b);
-    });
+    return Array.from(fullSet).sort((a, b) => (a === "Uncategorized" ? 1 : b === "Uncategorized" ? -1 : a.localeCompare(b)));
   };
-
   const allFolderPaths = getAllFolderPaths();
 
   const handleDropOnFolder = async (targetPath) => {
     setDragOverTarget(null);
     if (!draggedItem) return;
-
     if (draggedItem.type === 'paper') {
-      const destination = targetPath === "ROOT" ? "Uncategorized" : targetPath;
-      if (draggedItem.currentFolder === destination) {
-        setDraggedItem(null);
-        return;
-      }
+      const dest = targetPath === "ROOT" ? "Uncategorized" : targetPath;
+      if (draggedItem.currentFolder === dest) { setDraggedItem(null); return; }
       if (!isPersonalMode) {
-        setPapers(prev => prev.map(p => (p.id === draggedItem.id ? { ...p, folder: destination } : p)));
-        setExpandedFolders(prev => ({ ...prev, [destination]: true }));
+        setPapers(prev => prev.map(p => (p.id === draggedItem.id ? { ...p, folder: dest } : p)));
+        setExpandedFolders(prev => ({ ...prev, [dest]: true }));
         setDraggedItem(null);
         return;
       }
       try {
-        await updateDoc(doc(db, "papers", draggedItem.id), { folder: destination });
-        setExpandedFolders(prev => ({ ...prev, [destination]: true }));
+        await updateDoc(doc(db, "papers", draggedItem.id), { folder: dest });
+        setExpandedFolders(prev => ({ ...prev, [dest]: true }));
         await fetchPapers();
-      } catch (error) {
-        alert("移動に失敗しました: " + error.message);
-      }
+      } catch (e) { alert("移動に失敗しました: " + e.message); }
       setDraggedItem(null);
       return;
     }
 
     if (draggedItem.type === 'folder') {
-      const sourcePath = draggedItem.path;
+      const src = draggedItem.path;
       setDraggedItem(null);
+      if (src === "Uncategorized" || src === targetPath) return;
+      if (targetPath !== "ROOT" && targetPath.startsWith(src + '/')) return;
+      const leaf = src.split('/').pop();
+      const newPath = targetPath === "ROOT" ? leaf : `${targetPath}/${leaf}`;
+      if (newPath === src) return;
 
-      if (sourcePath === "Uncategorized" || sourcePath === targetPath) return;
-      if (targetPath !== "ROOT" && targetPath.startsWith(sourcePath + '/')) return;
-
-      const parts = sourcePath.split('/');
-      const leafName = parts[parts.length - 1];
-      const newPath = targetPath === "ROOT" ? leafName : `${targetPath}/${leafName}`;
-
-      if (newPath === sourcePath) return;
-
-      if (!isPersonalMode) {
-        setPapers(prev => prev.map(p => {
-          if (p.folder === sourcePath) return { ...p, folder: newPath };
-          if ((p.folder || "").startsWith(sourcePath + '/')) return { ...p, folder: newPath + p.folder.slice(sourcePath.length) };
-          return p;
-        }));
+      const updateFolderState = () => {
         setCustomFolders(prev => {
-          const next = prev.map(f => {
-            if (f === sourcePath) return newPath;
-            if (f.startsWith(sourcePath + '/')) return newPath + f.slice(sourcePath.length);
-            return f;
-          });
+          const next = prev.map(f => (f === src ? newPath : f.startsWith(src + '/') ? newPath + f.slice(src.length) : f));
           return Array.from(new Set([...next, newPath]));
         });
-        if (targetPath !== "ROOT") {
-          setExpandedFolders(prev => ({ ...prev, [targetPath]: true }));
-        }
+        if (targetPath !== "ROOT") setExpandedFolders(prev => ({ ...prev, [targetPath]: true }));
+      };
+
+      if (!isPersonalMode) {
+        setPapers(prev => prev.map(p => (p.folder === src ? { ...p, folder: newPath } : (p.folder || "").startsWith(src + '/') ? { ...p, folder: newPath + p.folder.slice(src.length) } : p)));
+        updateFolderState();
         return;
       }
-
       setLoading(true);
       setLoadingMessage("Moving folder...");
       try {
-        const targetPapers = papers.filter(p => p.folder === sourcePath || (p.folder || "").startsWith(sourcePath + '/'));
-        for (const p of targetPapers) {
-          const updatedFolder = p.folder === sourcePath ? newPath : newPath + p.folder.slice(sourcePath.length);
-          await updateDoc(doc(db, "papers", p.id), { folder: updatedFolder });
+        const targets = papers.filter(p => p.folder === src || (p.folder || "").startsWith(src + '/'));
+        for (const p of targets) {
+          await updateDoc(doc(db, "papers", p.id), { folder: p.folder === src ? newPath : newPath + p.folder.slice(src.length) });
         }
-        setCustomFolders(prev => {
-          const next = prev.map(f => {
-            if (f === sourcePath) return newPath;
-            if (f.startsWith(sourcePath + '/')) return newPath + f.slice(sourcePath.length);
-            return f;
-          });
-          return Array.from(new Set([...next, newPath]));
-        });
-        if (targetPath !== "ROOT") {
-          setExpandedFolders(prev => ({ ...prev, [targetPath]: true }));
-        }
+        updateFolderState();
         await fetchPapers();
-      } catch (error) {
-        alert("フォルダの移動に失敗しました: " + error.message);
-      }
+      } catch (e) { alert("フォルダの移動に失敗しました: " + e.message); }
       setLoading(false);
     }
   };
@@ -913,117 +741,82 @@ function App() {
   const handleCreateRootFolder = () => {
     const name = window.prompt("新しいフォルダ（タブ）の名前を入力してください：\n（例: Labor Economics）");
     if (!name || !name.trim()) return;
-    const cleanName = name.trim().replace(/\//g, '-');
-    setCustomFolders(prev => Array.from(new Set([...prev, cleanName])));
-    setExpandedFolders(prev => ({ ...prev, [cleanName]: true }));
-    setActiveFolder(cleanName);
+    const clean = name.trim().replace(/\//g, '-');
+    setCustomFolders(prev => Array.from(new Set([...prev, clean])));
+    setExpandedFolders(prev => ({ ...prev, [clean]: true }));
+    setActiveFolder(clean);
   };
 
   const handleCreateSubFolder = (parentPath) => {
-    const subName = window.prompt(`「${parentPath}」の中に作るサブフォルダ名を入力してください：`);
-    if (!subName || !subName.trim()) return;
-    const cleanSub = subName.trim().replace(/\//g, '-');
-    const fullPath = `${parentPath}/${cleanSub}`;
-    setCustomFolders(prev => Array.from(new Set([...prev, fullPath])));
-    setExpandedFolders(prev => ({ ...prev, [parentPath]: true, [fullPath]: true }));
-    setActiveFolder(fullPath);
+    const sub = window.prompt(`「${parentPath}」の中に作るサブフォルダ名を入力してください：`);
+    if (!sub || !sub.trim()) return;
+    const full = `${parentPath}/${sub.trim().replace(/\//g, '-')}`;
+    setCustomFolders(prev => Array.from(new Set([...prev, full])));
+    setExpandedFolders(prev => ({ ...prev, [parentPath]: true, [full]: true }));
+    setActiveFolder(full);
   };
 
   const handleRenameFolder = async (oldPath) => {
     const parts = oldPath.split('/');
-    const oldLeafName = parts[parts.length - 1];
-    const newLeafName = window.prompt("新しいフォルダ名を入力してください：", oldLeafName);
-    if (!newLeafName || !newLeafName.trim() || newLeafName.trim() === oldLeafName) return;
-
-    const cleanLeaf = newLeafName.trim().replace(/\//g, '-');
-    parts[parts.length - 1] = cleanLeaf;
+    const oldLeaf = parts[parts.length - 1];
+    const newLeaf = window.prompt("新しいフォルダ名を入力してください：", oldLeaf);
+    if (!newLeaf || !newLeaf.trim() || newLeaf.trim() === oldLeaf) return;
+    parts[parts.length - 1] = newLeaf.trim().replace(/\//g, '-');
     const newPath = parts.join('/');
 
     if (!isPersonalMode) {
-      setPapers(prev => prev.map(p => {
-        if (p.folder === oldPath) return { ...p, folder: newPath };
-        if ((p.folder || "").startsWith(oldPath + '/')) return { ...p, folder: newPath + p.folder.slice(oldPath.length) };
-        return p;
-      }));
-      setCustomFolders(prev => prev.map(f => {
-        if (f === oldPath) return newPath;
-        if (f.startsWith(oldPath + '/')) return newPath + f.slice(oldPath.length);
-        return f;
-      }));
+      setPapers(prev => prev.map(p => (p.folder === oldPath ? { ...p, folder: newPath } : (p.folder || "").startsWith(oldPath + '/') ? { ...p, folder: newPath + p.folder.slice(oldPath.length) } : p)));
+      setCustomFolders(prev => prev.map(f => (f === oldPath ? newPath : f.startsWith(oldPath + '/') ? newPath + f.slice(oldPath.length) : f)));
       return;
     }
-
     setLoading(true);
     setLoadingMessage("Renaming folder...");
     try {
-      const targetPapers = papers.filter(p => p.folder === oldPath || (p.folder || "").startsWith(oldPath + '/'));
-      for (const p of targetPapers) {
-        const updatedFolder = p.folder === oldPath ? newPath : newPath + p.folder.slice(oldPath.length);
-        await updateDoc(doc(db, "papers", p.id), { folder: updatedFolder });
+      const targets = papers.filter(p => p.folder === oldPath || (p.folder || "").startsWith(oldPath + '/'));
+      for (const p of targets) {
+        await updateDoc(doc(db, "papers", p.id), { folder: p.folder === oldPath ? newPath : newPath + p.folder.slice(oldPath.length) });
       }
-      setCustomFolders(prev => prev.map(f => {
-        if (f === oldPath) return newPath;
-        if (f.startsWith(oldPath + '/')) return newPath + f.slice(oldPath.length);
-        return f;
-      }));
+      setCustomFolders(prev => prev.map(f => (f === oldPath ? newPath : f.startsWith(oldPath + '/') ? newPath + f.slice(oldPath.length) : f)));
       await fetchPapers();
-    } catch (error) {
-      alert("名前の変更に失敗しました: " + error.message);
-    }
+    } catch (e) { alert("名前の変更に失敗しました: " + e.message); }
     setLoading(false);
   };
 
   const handleDeleteFolder = async (targetPath) => {
-    const ok = window.confirm(`フォルダ「${targetPath}」を削除しますか？\n（※中の論文は消えず「Uncategorized」に移動します）`);
-    if (!ok) return;
-
+    if (!window.confirm(`フォルダ「${targetPath}」を削除しますか？\n（※中の論文は消えず「Uncategorized」に移動します）`)) return;
     if (!isPersonalMode) {
       setPapers(prev => prev.map(p => (p.folder === targetPath || (p.folder || "").startsWith(targetPath + '/') ? { ...p, folder: "Uncategorized" } : p)));
       setCustomFolders(prev => prev.filter(f => f !== targetPath && !f.startsWith(targetPath + '/')));
       return;
     }
-
     setLoading(true);
     setLoadingMessage("Deleting folder...");
     try {
-      const targetPapers = papers.filter(p => p.folder === targetPath || (p.folder || "").startsWith(targetPath + '/'));
-      for (const p of targetPapers) {
-        await updateDoc(doc(db, "papers", p.id), { folder: "Uncategorized" });
-      }
+      const targets = papers.filter(p => p.folder === targetPath || (p.folder || "").startsWith(targetPath + '/'));
+      for (const p of targets) await updateDoc(doc(db, "papers", p.id), { folder: "Uncategorized" });
       setCustomFolders(prev => prev.filter(f => f !== targetPath && !f.startsWith(targetPath + '/')));
       await fetchPapers();
-    } catch (error) {
-      alert("削除に失敗しました: " + error.message);
-    }
+    } catch (e) { alert("削除に失敗しました: " + e.message); }
     setLoading(false);
   };
 
   const handleRenamePaper = async (paper) => {
-    const newTitleInput = window.prompt("新しい論文タイトルを入力してください：", paper.title);
-    if (!newTitleInput || !newTitleInput.trim() || newTitleInput.trim() === paper.title) return;
+    const t = window.prompt("新しい論文タイトルを入力してください：", paper.title);
+    if (!t || !t.trim() || t.trim() === paper.title) return;
     if (!isPersonalMode) {
-      setPapers(prev => prev.map(p => (p.id === paper.id ? { ...p, title: newTitleInput.trim() } : p)));
-      if (selectedPaper?.id === paper.id) {
-        setSelectedPaper({ ...selectedPaper, title: newTitleInput.trim() });
-      }
+      setPapers(prev => prev.map(p => (p.id === paper.id ? { ...p, title: t.trim() } : p)));
+      if (selectedPaper?.id === paper.id) setSelectedPaper({ ...selectedPaper, title: t.trim() });
       return;
     }
     try {
-      await updateDoc(doc(db, "papers", paper.id), { title: newTitleInput.trim() });
-      if (selectedPaper?.id === paper.id) {
-        setSelectedPaper({ ...selectedPaper, title: newTitleInput.trim() });
-      }
+      await updateDoc(doc(db, "papers", paper.id), { title: t.trim() });
+      if (selectedPaper?.id === paper.id) setSelectedPaper({ ...selectedPaper, title: t.trim() });
       await fetchPapers();
-    } catch (error) {
-      alert("タイトルの変更に失敗しました: " + error.message);
-    }
+    } catch (e) { alert("タイトルの変更に失敗しました: " + e.message); }
   };
 
   const handleMovePaper = async (paper) => {
-    const dest = window.prompt(
-      "移動先のフォルダ名を入力してください：\n（サブフォルダにする場合は「親フォルダ/サブフォルダ」のように / で区切ります）",
-      paper.folder || "Uncategorized"
-    );
+    const dest = window.prompt("移動先のフォルダ名を入力してください：\n（サブフォルダは / で区切ります）", paper.folder || "Uncategorized");
     if (!dest || !dest.trim()) return;
     if (!isPersonalMode) {
       setPapers(prev => prev.map(p => (p.id === paper.id ? { ...p, folder: dest.trim() } : p)));
@@ -1034,60 +827,44 @@ function App() {
       await updateDoc(doc(db, "papers", paper.id), { folder: dest.trim() });
       setExpandedFolders(prev => ({ ...prev, [dest.trim()]: true }));
       await fetchPapers();
-    } catch (error) {
-      alert("移動に失敗しました: " + error.message);
-    }
+    } catch (e) { alert("移動に失敗しました: " + e.message); }
   };
 
   const handleDeletePaper = async (paper) => {
-    const ok = window.confirm(`論文「${paper.title}」を完全に削除しますか？`);
-    if (!ok) return;
+    if (!window.confirm(`論文「${paper.title}」を完全に削除しますか？`)) return;
     const modeKey = isPersonalMode ? "personal" : "demo";
-
     if (!isPersonalMode) {
       setPapers(prev => prev.filter(p => p.id !== paper.id));
-      if (selectedPaper?.id === paper.id) {
-        setSelectedPaper(null);
-        saveStorage(`pm_lastPaperId_${modeKey}`, null);
-      }
+      if (selectedPaper?.id === paper.id) { setSelectedPaper(null); saveStorage(`pm_lastPaperId_${modeKey}`, null); }
       return;
     }
     try {
       await deleteDoc(doc(db, "papers", paper.id));
       await deletePdfLocally(paper.id);
-      if (selectedPaper?.id === paper.id) {
-        setSelectedPaper(null);
-        saveStorage(`pm_lastPaperId_${modeKey}`, null);
-      }
-      setChatHistoryMap(prev => {
-        const next = { ...prev };
-        delete next[paper.id];
-        return next;
-      });
+      if (selectedPaper?.id === paper.id) { setSelectedPaper(null); saveStorage(`pm_lastPaperId_${modeKey}`, null); }
+      setChatHistoryMap(prev => { const n = { ...prev }; delete n[paper.id]; return n; });
       await fetchPapers();
-    } catch (error) {
-      alert("削除に失敗しました: " + error.message);
-    }
+    } catch (e) { alert("削除に失敗しました: " + e.message); }
   };
 
   const runInitialSummary = async (paper) => {
     if (!paper.abstract || !paper.abstract.trim()) {
-      updateChatForPaper(paper.id, [{ role: 'ai', text: "（要約用テキストが未登録です。下のメモ欄に自由にノートを記入できます）" }]);
+      await updateChatForPaper(paper.id, [{ role: 'ai', text: "（要約用テキストが未登録です。下のメモ欄に自由にノートを記入できます）" }]);
       return;
     }
-
     setLoading(true);
     setLoadingMessage("Gemini is summarizing the paper...");
     try {
       const prompt = `Please summarize the following paper in about 3 sentences. Write the summary entirely in ${aiLanguage}.\nTitle: ${paper.title}\nContent: ${paper.abstract}`;
       const responseText = await generateWithFallback(prompt);
-      updateChatForPaper(paper.id, [{ role: 'ai', text: responseText }]);
-    } catch (error) {
-      updateChatForPaper(paper.id, [{ role: 'ai', text: "Failed to call Gemini API." }]);
+      await updateChatForPaper(paper.id, [{ role: 'ai', text: responseText }]);
+    } catch (e) {
+      await updateChatForPaper(paper.id, [{ role: 'ai', text: "Failed to call Gemini API." }]);
     }
     setLoading(false);
   };
 
+  // ★ 論文選択時：クラウドから最新のチャット履歴・メモ・マーカーを取得して同期
   const handleSelectPaper = async (paper, options = {}) => {
     const modeKey = isPersonalMode ? "personal" : "demo";
     saveStorage(`pm_lastPaperId_${modeKey}`, paper.id);
@@ -1099,33 +876,49 @@ function App() {
     setCurrentPdfUrl(null);
     setMemoText(paper.memo || "");
     setMemoStatus("");
+    setHighlights(paper.highlights || []);
+
+    let latestPaper = paper;
 
     if (isPersonalMode) {
       try {
-        const savedFile = await getPdfLocally(paper.id);
-        if (savedFile) {
-          setCurrentPdfUrl(URL.createObjectURL(savedFile));
+        const snap = await getDoc(doc(db, "papers", paper.id));
+        if (snap.exists()) {
+          latestPaper = { id: snap.id, ...snap.data() };
+          setSelectedPaper(latestPaper);
+          setMemoText(latestPaper.memo || "");
+          setHighlights(latestPaper.highlights || []);
+          setPapers(prev => prev.map(p => (p.id === latestPaper.id ? latestPaper : p)));
         }
-      } catch (e) {
-        console.error("Failed to load saved PDF", e);
-      }
+      } catch (e) { console.error("Failed to fetch latest paper:", e); }
+
+      try {
+        const savedFile = await getPdfLocally(paper.id);
+        if (savedFile) setCurrentPdfUrl(URL.createObjectURL(savedFile));
+      } catch (e) {}
     }
 
-    const existingChat = loadStorage("pm_chats", {})[paper.id];
-    if (existingChat && existingChat.length > 0 && !options.forceRefresh) {
-      setChat(existingChat);
+    if (latestPaper.chat && latestPaper.chat.length > 0 && !options.forceRefresh) {
+      setChat(latestPaper.chat);
+      setChatHistoryMap(prev => ({ ...prev, [latestPaper.id]: latestPaper.chat }));
+      return;
+    }
+
+    const localChat = loadStorage("pm_chats", {})[latestPaper.id];
+    if (localChat && localChat.length > 0 && !options.forceRefresh) {
+      await updateChatForPaper(latestPaper.id, localChat);
       return;
     }
 
     setChat([]);
-    await runInitialSummary(paper);
+    await runInitialSummary(latestPaper);
   };
 
   const handleSendMessage = async () => {
     if (!inputText.trim() || !selectedPaper) return;
     const question = inputText;
     const newChat = [...chat, { role: 'user', text: question }];
-    updateChatForPaper(selectedPaper.id, newChat);
+    await updateChatForPaper(selectedPaper.id, newChat);
     setInputText("");
     setLoading(true);
     setLoadingMessage("Gemini is generating an answer...");
@@ -1134,9 +927,9 @@ function App() {
       const contextText = selectedPaper.abstract || memoText || "No abstract provided.";
       const prompt = `This is a question regarding the paper "${selectedPaper.title}". Please answer based on the following content. Write your answer entirely in ${aiLanguage}.\nContent: ${contextText}\n\nQuestion: ${question}`;
       const responseText = await generateWithFallback(prompt, "pro");
-      updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: responseText }]);
-    } catch (error) {
-      updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: "An error occurred." }]);
+      await updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: responseText }]);
+    } catch (e) {
+      await updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: "An error occurred." }]);
     }
     setLoading(false);
   };
@@ -1144,36 +937,28 @@ function App() {
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     setLoading(true);
     setLoadingMessage("Extracting text from PDF...");
     setPendingPdfFile(file);
     setCurrentPdfUrl(URL.createObjectURL(file));
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const maxPages = Math.min(pdf.numPages, 5);
-
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
       let extractedText = "";
-      for (let i = 1; i <= maxPages; i++) {
+      for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
         const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(item => item.str).join(" ");
-        extractedText += `\n--- Page ${i} ---\n${pageText}`;
+        const tc = await page.getTextContent();
+        extractedText += `\n--- Page ${i} ---\n` + tc.items.map(item => item.str).join(" ");
       }
-
       setLoadingMessage("Gemini is summarizing...");
+      const prompt = `Read the following extracted text from an academic paper and extract the exact "Title" and a structured "Abstract".
+Adapt the structure based on the paper's field and methodology. Output everything entirely in ${aiLanguage}.
+CRITICAL INSTRUCTION: Be highly concise. Write a maximum of 1 to 2 short sentences per bullet point.
 
-      const prompt = `Read the following extracted text from an academic paper and extract the exact "Title" and a structured "Abstract". 
-      Adapt the structure based on the paper's field and methodology. 
-      Output everything entirely in ${aiLanguage}.
-      CRITICAL INSTRUCTION: Be highly concise. Write a maximum of 1 to 2 short sentences per bullet point. Do not generate long paragraphs.
-
-      Format:
-      Title: [Title here]
-      Abstract:
-      (If the paper is Empirical Analysis / Econometrics)
+Format:
+Title: [Title here]
+Abstract:
+(If Empirical Analysis / Econometrics)
 - Research Question:
 - Data Used:
 - Main Variables (Dependent & Explanatory):
@@ -1182,7 +967,7 @@ function App() {
 - Conclusion:
 - General Summary:
 
-      (If the paper is Historical, Qualitative, or Theoretical)
+(If Historical, Qualitative, or Theoretical)
 - Core Theme / Research Question:
 - Background / Context:
 - Analytical Framework / Approach:
@@ -1190,15 +975,12 @@ function App() {
 - Conclusion:
 - General Summary:
 
-      Paper Text:
-      ${extractedText}`;
-
+Paper Text:
+${extractedText}`;
       const text = await generateWithFallback(prompt);
-
       setNewTitle(file.name.replace('.pdf', ''));
       setNewAbstract(`[Extracted by Gemini]\n\n${text}`);
     } catch (error) {
-      console.error(error);
       alert("Failed to read PDF: " + error.message);
     } finally {
       setLoading(false);
@@ -1209,164 +991,78 @@ function App() {
   const handleViewerPdfLoad = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     setCurrentPdfUrl(URL.createObjectURL(file));
     if (selectedPaper && isPersonalMode) {
       try {
         await savePdfLocally(selectedPaper.id, file);
         setSavedPdfIds(prev => ({ ...prev, [selectedPaper.id]: true }));
-      } catch (error) {
-        console.error("Failed to save PDF locally:", error);
-      }
+      } catch (e) {}
     }
   };
 
   const handleAddPaper = async () => {
     if (!newTitle.trim()) return;
     const folderName = newFolder.trim() || "Uncategorized";
-
     if (!isPersonalMode) {
-      const demoNew = {
-        id: `demo-${Date.now()}`,
-        title: newTitle,
-        abstract: newAbstract,
-        memo: "",
-        folder: folderName
-      };
-      setPapers(prev => [...prev, demoNew]);
-      setNewTitle("");
-      setNewAbstract("");
-      setNewFolder("");
-      setPendingPdfFile(null);
-      setIsAdding(false);
+      setPapers(prev => [...prev, { id: `demo-${Date.now()}`, title: newTitle, abstract: newAbstract, memo: "", folder: folderName, highlights: [] }]);
+      setNewTitle(""); setNewAbstract(""); setNewFolder(""); setPendingPdfFile(null); setIsAdding(false);
       setExpandedFolders(prev => ({ ...prev, [folderName]: true }));
       return;
     }
-
     setLoading(true);
     setLoadingMessage("Saving to database...");
-
     try {
       const docRef = await addDoc(collection(db, "papers"), {
-        title: newTitle,
-        abstract: newAbstract,
-        memo: "",
-        folder: folderName,
-        createdAt: new Date()
+        title: newTitle, abstract: newAbstract, memo: "", folder: folderName, highlights: [], createdAt: new Date()
       });
-
-      if (pendingPdfFile) {
-        await savePdfLocally(docRef.id, pendingPdfFile);
-      }
-
-      setNewTitle("");
-      setNewAbstract("");
-      setNewFolder("");
-      setPendingPdfFile(null);
-      setIsAdding(false);
+      if (pendingPdfFile) await savePdfLocally(docRef.id, pendingPdfFile);
+      setNewTitle(""); setNewAbstract(""); setNewFolder(""); setPendingPdfFile(null); setIsAdding(false);
       setExpandedFolders(prev => ({ ...prev, [folderName]: true }));
       await fetchPapers();
-    } catch (error) {
-      alert("Failed to save: " + error.message);
-    }
+    } catch (e) { alert("Failed to save: " + e.message); }
     setLoading(false);
   };
 
   const renderTreeNodes = (parentPath = "", depth = 0) => {
     const childFolders = allFolderPaths.filter(path => {
-      if (parentPath === "") {
-        return !path.includes('/');
-      } else {
-        if (!path.startsWith(parentPath + '/')) return false;
-        const remainder = path.slice(parentPath.length + 1);
-        return !remainder.includes('/');
-      }
+      if (parentPath === "") return !path.includes('/');
+      return path.startsWith(parentPath + '/') && !path.slice(parentPath.length + 1).includes('/');
     });
-
-    const directPapers = parentPath === ""
-      ? []
-      : papers.filter(p => (p.folder || "Uncategorized") === parentPath);
+    const directPapers = parentPath === "" ? [] : papers.filter(p => (p.folder || "Uncategorized") === parentPath);
 
     return (
       <>
         {directPapers.map(paper => {
           const paperMenuKey = `paper-${paper.id}`;
-          const isPaperSelected = selectedPaper?.id === paper.id;
-
+          const isSelected = selectedPaper?.id === paper.id;
           return (
             <div
               key={paper.id}
               draggable={!isMobile}
-              onDragStart={(e) => {
-                e.stopPropagation();
-                setDraggedItem({ type: 'paper', id: paper.id, currentFolder: paper.folder || "Uncategorized" });
-              }}
-              onDragEnd={() => {
-                setDraggedItem(null);
-                setDragOverTarget(null);
-              }}
+              onDragStart={(e) => { e.stopPropagation(); setDraggedItem({ type: 'paper', id: paper.id, currentFolder: paper.folder || "Uncategorized" }); }}
+              onDragEnd={() => { setDraggedItem(null); setDragOverTarget(null); }}
               onClick={() => handleSelectPaper(paper)}
               style={{
-                position: 'relative',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: isMobile ? '10px 6px' : '6px 6px',
-                paddingLeft: `${12 + depth * 16}px`,
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: isMobile ? '14px' : '13px',
-                backgroundColor: isPaperSelected ? '#e8f0fe' : 'transparent',
-                color: isPaperSelected ? '#1a73e8' : '#333',
-                fontWeight: isPaperSelected ? 'bold' : 'normal',
-                marginBottom: '2px',
+                position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: isMobile ? '10px 6px' : '6px', paddingLeft: `${12 + depth * 16}px`, borderRadius: '6px', cursor: 'pointer',
+                fontSize: isMobile ? '14px' : '13px', backgroundColor: isSelected ? '#e8f0fe' : 'transparent',
+                color: isSelected ? '#1a73e8' : '#333', fontWeight: isSelected ? 'bold' : 'normal', marginBottom: '2px',
                 opacity: draggedItem?.type === 'paper' && draggedItem?.id === paper.id ? 0.4 : 1
               }}
-              title="Drag to move to another folder"
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', flex: 1 }}>
                 <span style={{ fontSize: '12px', flexShrink: 0 }}>{savedPdfIds[paper.id] ? '📄' : '📝'}</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {paper.title}
-                </span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{paper.title}</span>
               </div>
-
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpenMenuId(openMenuId === paperMenuKey ? null : paperMenuKey);
-                }}
+                onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === paperMenuKey ? null : paperMenuKey); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', fontSize: '15px', color: '#666', flexShrink: 0 }}
-                title="Paper options"
-              >
-                ⋮
-              </button>
-
+              >⋮</button>
               {openMenuId === paperMenuKey && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    position: 'absolute', right: '8px', top: '30px', zIndex: 100,
-                    backgroundColor: '#fff', border: '1px solid #ccc', borderRadius: '6px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)', width: '155px', overflow: 'hidden', fontWeight: 'normal'
-                  }}
-                >
-                  <div
-                    onClick={() => { setOpenMenuId(null); handleRenamePaper(paper); }}
-                    style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee', color: '#333' }}
-                  >
-                    ✏️ Rename Paper
-                  </div>
-                  <div
-                    onClick={() => { setOpenMenuId(null); handleMovePaper(paper); }}
-                    style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee', color: '#333' }}
-                  >
-                    📁 Move to Folder...
-                  </div>
-                  <div
-                    onClick={() => { setOpenMenuId(null); handleDeletePaper(paper); }}
-                    style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', color: '#d9534f' }}
-                  >
-                    🗑️ Delete Paper
-                  </div>
+                <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', right: '8px', top: '30px', zIndex: 100, backgroundColor: '#fff', border: '1px solid #ccc', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', width: '155px', overflow: 'hidden', fontWeight: 'normal' }}>
+                  <div onClick={() => { setOpenMenuId(null); handleRenamePaper(paper); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee', color: '#333' }}>✏️ Rename Paper</div>
+                  <div onClick={() => { setOpenMenuId(null); handleMovePaper(paper); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee', color: '#333' }}>📁 Move to Folder...</div>
+                  <div onClick={() => { setOpenMenuId(null); handleDeletePaper(paper); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', color: '#d9534f' }}>🗑️ Delete Paper</div>
                 </div>
               )}
             </div>
@@ -1374,8 +1070,7 @@ function App() {
         })}
 
         {childFolders.map(folderPath => {
-          const parts = folderPath.split('/');
-          const name = parts[parts.length - 1];
+          const name = folderPath.split('/').pop();
           const isExpanded = expandedFolders[folderPath] !== false;
           const isDragOver = dragOverTarget === folderPath;
           const menuKey = `folder-${folderPath}`;
@@ -1386,105 +1081,44 @@ function App() {
               <div
                 style={{ position: 'relative' }}
                 draggable={!isMobile && folderPath !== "Uncategorized"}
-                onDragStart={(e) => {
-                  e.stopPropagation();
-                  setDraggedItem({ type: 'folder', path: folderPath });
-                }}
-                onDragEnd={() => {
-                  setDraggedItem(null);
-                  setDragOverTarget(null);
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOverTarget(folderPath);
-                }}
-                onDragLeave={() => {
-                  if (dragOverTarget === folderPath) setDragOverTarget(null);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleDropOnFolder(folderPath);
-                }}
+                onDragStart={(e) => { e.stopPropagation(); setDraggedItem({ type: 'folder', path: folderPath }); }}
+                onDragEnd={() => { setDraggedItem(null); setDragOverTarget(null); }}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTarget(folderPath); }}
+                onDragLeave={() => { if (dragOverTarget === folderPath) setDragOverTarget(null); }}
+                onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDropOnFolder(folderPath); }}
               >
                 <div
-                  onClick={() => {
-                    setActiveFolder(folderPath);
-                    setExpandedFolders(prev => ({ ...prev, [folderPath]: !isExpanded }));
-                  }}
+                  onClick={() => { setActiveFolder(folderPath); setExpandedFolders(prev => ({ ...prev, [folderPath]: !isExpanded })); }}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: isMobile ? '9px 6px' : '6px 6px',
-                    paddingLeft: `${6 + depth * 16}px`,
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: isMobile ? '14px' : '13px',
-                    fontWeight: 'bold',
-                    backgroundColor: isDragOver ? '#d2e3fc' : 'transparent',
-                    border: isDragOver ? '2px dashed #1a73e8' : '2px solid transparent',
-                    color: '#222',
-                    marginBottom: '2px',
+                    padding: isMobile ? '9px 6px' : '6px', paddingLeft: `${6 + depth * 16}px`, borderRadius: '6px', cursor: 'pointer',
+                    fontSize: isMobile ? '14px' : '13px', fontWeight: 'bold', backgroundColor: isDragOver ? '#d2e3fc' : 'transparent',
+                    border: isDragOver ? '2px dashed #1a73e8' : '2px solid transparent', color: '#222', marginBottom: '2px',
                     opacity: draggedItem?.type === 'folder' && draggedItem?.path === folderPath ? 0.4 : 1
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden', flex: 1 }}>
-                    <span style={{ fontSize: '10px', width: '14px', textAlign: 'center', color: '#555', flexShrink: 0 }}>
-                      {isExpanded ? '▼' : '▶'}
-                    </span>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      📁 {name}
-                    </span>
+                    <span style={{ fontSize: '10px', width: '14px', textAlign: 'center', color: '#555', flexShrink: 0 }}>{isExpanded ? '▼' : '▶'}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📁 {name}</span>
                   </div>
-
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
                     <span style={{ fontSize: '11px', color: '#888', fontWeight: 'normal' }}>{totalCount}</span>
                     {folderPath !== "Uncategorized" && (
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenMenuId(openMenuId === menuKey ? null : menuKey);
-                        }}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', fontSize: '15px', color: '#555', borderRadius: '4px' }}
-                        title="Folder options"
-                      >
-                        ⋮
-                      </button>
+                        onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === menuKey ? null : menuKey); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', fontSize: '15px', color: '#555' }}
+                      >⋮</button>
                     )}
                   </div>
                 </div>
-
                 {openMenuId === menuKey && (
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    style={{
-                      position: 'absolute', right: '8px', top: '32px', zIndex: 100,
-                      backgroundColor: '#fff', border: '1px solid #ccc', borderRadius: '6px',
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)', width: '160px', overflow: 'hidden', fontWeight: 'normal'
-                    }}
-                  >
-                    <div
-                      onClick={() => { setOpenMenuId(null); handleCreateSubFolder(folderPath); }}
-                      style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee' }}
-                    >
-                      ＋ Add Sub-folder
-                    </div>
-                    <div
-                      onClick={() => { setOpenMenuId(null); handleRenameFolder(folderPath); }}
-                      style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee' }}
-                    >
-                      ✏️ Rename
-                    </div>
-                    <div
-                      onClick={() => { setOpenMenuId(null); handleDeleteFolder(folderPath); }}
-                      style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', color: '#d9534f' }}
-                    >
-                      🗑️ Delete
-                    </div>
+                  <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', right: '8px', top: '32px', zIndex: 100, backgroundColor: '#fff', border: '1px solid #ccc', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', width: '160px', overflow: 'hidden', fontWeight: 'normal' }}>
+                    <div onClick={() => { setOpenMenuId(null); handleCreateSubFolder(folderPath); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee' }}>＋ Add Sub-folder</div>
+                    <div onClick={() => { setOpenMenuId(null); handleRenameFolder(folderPath); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #eee' }}>✏️ Rename</div>
+                    <div onClick={() => { setOpenMenuId(null); handleDeleteFolder(folderPath); }} style={{ padding: '10px 12px', fontSize: '13px', cursor: 'pointer', color: '#d9534f' }}>🗑️ Delete</div>
                   </div>
                 )}
               </div>
-
               {isExpanded && renderTreeNodes(folderPath, depth + 1)}
             </div>
           );
@@ -1493,79 +1127,45 @@ function App() {
     );
   };
 
-  // リーディングモードの配色テーマ
   const themeStyles = {
     light: { bg: '#ffffff', text: '#1f2328', sub: '#656d76', border: '#e1e4e8' },
     sepia: { bg: '#f6efe2', text: '#3b2f23', sub: '#7a6855', border: '#dfd1b8' },
     dark: { bg: '#16181c', text: '#e6e8eb', sub: '#9aa0a6', border: '#2f343d' }
   }[readingTheme] || { bg: '#ffffff', text: '#1f2328', sub: '#656d76', border: '#e1e4e8' };
 
-  // サイドバーの中身（PC固定 / スマホはドロワーで共通利用）
   const sidebarContent = (
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', gap: '4px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', flex: 1 }}>
-          <h2
-            onDoubleClick={handleToggleMode}
-            style={{ fontSize: '17px', margin: 0, color: '#333', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-            title="Double-click to switch Personal / Demo mode"
-          >
+          <h2 onDoubleClick={handleToggleMode} style={{ fontSize: '17px', margin: 0, color: '#333', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             📚 Paper Manager
           </h2>
-          {isPersonalMode ? (
-            <span
-              onClick={handleToggleMode}
-              style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', backgroundColor: '#e6f4ea', color: '#137333', fontWeight: 'bold', cursor: 'pointer', flexShrink: 0 }}
-              title="Click to lock back to Demo Mode"
-            >
-              🔓 Personal
-            </span>
-          ) : (
-            <span
-              onClick={handleToggleMode}
-              style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', backgroundColor: '#e8f0fe', color: '#1a73e8', fontWeight: 'bold', cursor: 'pointer', flexShrink: 0 }}
-              title="Tap to switch to Personal Mode"
-            >
-              Demo
-            </span>
-          )}
+          <span
+            onClick={handleToggleMode}
+            style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', backgroundColor: isPersonalMode ? '#e6f4ea' : '#e8f0fe', color: isPersonalMode ? '#137333' : '#1a73e8', fontWeight: 'bold', cursor: 'pointer', flexShrink: 0 }}
+          >
+            {isPersonalMode ? "🔓 Personal" : "Demo"}
+          </span>
         </div>
-        <button
-          onClick={() => (isMobile ? setIsMobileMenuOpen(false) : setSidebarWidth(0))}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', padding: '4px 8px', color: '#001f3f', flexShrink: 0 }}
-          title="Hide Sidebar"
-        >
+        <button onClick={() => (isMobile ? setIsMobileMenuOpen(false) : setSidebarWidth(0))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', padding: '4px 8px', color: '#001f3f', flexShrink: 0 }}>
           {isMobile ? "✕" : "◀"}
         </button>
       </div>
 
       <div style={{ marginBottom: '12px' }}>
-        <div style={{ marginBottom: '10px' }}>
-          <select
-            value={aiLanguage}
-            onChange={(e) => setAiLanguage(e.target.value)}
-            style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', color: '#333', backgroundColor: '#fff', fontSize: isMobile ? '16px' : '13px' }}
-          >
-            <option value="Japanese">AI Language: Japanese</option>
-            <option value="English">AI Language: English</option>
-            <option value="Chinese">AI Language: Chinese</option>
-          </select>
-        </div>
-
+        <select value={aiLanguage} onChange={(e) => setAiLanguage(e.target.value)} style={{ width: '100%', padding: '8px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ccc', color: '#333', backgroundColor: '#fff', fontSize: isMobile ? '16px' : '13px' }}>
+          <option value="Japanese">AI Language: Japanese</option>
+          <option value="English">AI Language: English</option>
+          <option value="Chinese">AI Language: Chinese</option>
+        </select>
         <button
           onClick={() => {
-            setIsAdding(true);
-            setIsMobileMenuOpen(false);
-            setSelectedPaper(null);
-            setNewTitle("");
-            setNewAbstract("");
-            setPendingPdfFile(null);
+            setIsAdding(true); setIsMobileMenuOpen(false); setSelectedPaper(null);
+            setNewTitle(""); setNewAbstract(""); setPendingPdfFile(null);
             setNewFolder(activeFolder && activeFolder !== "Uncategorized" ? activeFolder : "");
-            setLoading(false);
-            setLoadingMessage("");
-            setCurrentPdfUrl(null);
+            setLoading(false); setLoadingMessage(""); setCurrentPdfUrl(null);
           }}
-          style={{ width: '100%', padding: '10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          style={{ width: '100%', padding: '10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
         >
           ＋ Add New Paper
         </button>
@@ -1573,91 +1173,31 @@ function App() {
 
       <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', borderTop: '1px solid #ddd', paddingTop: '8px' }}>
         <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOverTarget("ROOT");
-          }}
+          onDragOver={(e) => { e.preventDefault(); setDragOverTarget("ROOT"); }}
           onDragLeave={() => setDragOverTarget(null)}
-          onDrop={(e) => {
-            e.preventDefault();
-            handleDropOnFolder("ROOT");
-          }}
-          style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '4px 6px', marginBottom: '6px', borderRadius: '4px',
-            backgroundColor: dragOverTarget === "ROOT" ? '#d2e3fc' : 'transparent',
-            border: dragOverTarget === "ROOT" ? '1px dashed #1a73e8' : '1px solid transparent',
-            gap: '4px'
-          }}
+          onDrop={(e) => { e.preventDefault(); handleDropOnFolder("ROOT"); }}
+          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 6px', marginBottom: '6px', borderRadius: '4px', backgroundColor: dragOverTarget === "ROOT" ? '#d2e3fc' : 'transparent', border: dragOverTarget === "ROOT" ? '1px dashed #1a73e8' : '1px solid transparent' }}
         >
-          <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', letterSpacing: '0.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            FOLDERS ({papers.length})
-          </span>
-          <button
-            onClick={handleCreateRootFolder}
-            style={{ background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', padding: '2px 4px', flexShrink: 0 }}
-            title="Add new folder"
-          >
-            ＋ Folder
-          </button>
+          <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#666' }}>FOLDERS ({papers.length})</span>
+          <button onClick={handleCreateRootFolder} style={{ background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>＋ Folder</button>
         </div>
-
-        {allFolderPaths.length === 0 && !loading && (
-          <p style={{ fontSize: '13px', color: '#666', textAlign: 'center', marginTop: '20px' }}>No papers yet</p>
-        )}
-
+        {allFolderPaths.length === 0 && !loading && <p style={{ fontSize: '13px', color: '#666', textAlign: 'center', marginTop: '20px' }}>No papers yet</p>}
         {renderTreeNodes("", 0)}
       </div>
     </>
   );
 
-  // ★ PDF / リーディングモード切り替えセクション
   const pdfSection = (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fdfdfd', height: '100%', overflow: 'hidden' }}>
-      {/* 上部ビューアツールバー（PDFがあるとき表示） */}
       {(currentPdfUrl || (!isPersonalMode && selectedPaper?.abstract)) && (
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '6px',
-          padding: '6px 10px',
-          backgroundColor: '#f8f9fa',
-          borderBottom: '1px solid #ddd',
-          flexShrink: 0
-        }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '6px', padding: '6px 10px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #ddd', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             {currentPdfUrl && (
               <>
-                <button
-                  onClick={() => setIsReadingMode(false)}
-                  style={{
-                    padding: '4px 9px',
-                    fontSize: '12px',
-                    borderRadius: '5px',
-                    border: '1px solid #ccc',
-                    cursor: 'pointer',
-                    fontWeight: !isReadingMode ? 'bold' : 'normal',
-                    backgroundColor: !isReadingMode ? '#007bff' : '#fff',
-                    color: !isReadingMode ? '#fff' : '#333'
-                  }}
-                >
+                <button onClick={() => setIsReadingMode(false)} style={{ padding: '4px 9px', fontSize: '12px', borderRadius: '5px', border: '1px solid #ccc', cursor: 'pointer', fontWeight: !isReadingMode ? 'bold' : 'normal', backgroundColor: !isReadingMode ? '#007bff' : '#fff', color: !isReadingMode ? '#fff' : '#333' }}>
                   📄 PDF
                 </button>
-                <button
-                  onClick={handleToggleReadingMode}
-                  style={{
-                    padding: '4px 9px',
-                    fontSize: '12px',
-                    borderRadius: '5px',
-                    border: '1px solid #ccc',
-                    cursor: 'pointer',
-                    fontWeight: isReadingMode ? 'bold' : 'normal',
-                    backgroundColor: isReadingMode ? '#007bff' : '#fff',
-                    color: isReadingMode ? '#fff' : '#333'
-                  }}
-                >
+                <button onClick={handleToggleReadingMode} style={{ padding: '4px 9px', fontSize: '12px', borderRadius: '5px', border: '1px solid #ccc', cursor: 'pointer', fontWeight: isReadingMode ? 'bold' : 'normal', backgroundColor: isReadingMode ? '#007bff' : '#fff', color: isReadingMode ? '#fff' : '#333' }}>
                   📖 リーディング
                 </button>
               </>
@@ -1667,92 +1207,77 @@ function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
             {isReadingMode && (
               <>
-               <button
-                  onClick={() => setReadingFontSize(s => Math.max(12, s - 2))}
-                  style={{ height: '26px', minWidth: '28px', padding: '0 6px', fontSize: '11px', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-                  title="文字を小さく"
-                >
-                  A
+                <span style={{ fontSize: '11px', color: '#666', marginRight: '2px' }}>🖍️</span>
+                {HIGHLIGHT_COLORS.map(c => (
+                  <button
+                    key={c.code}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleAddHighlight(c.code)}
+                    style={{ width: '24px', height: '24px', borderRadius: '50%', border: '1px solid #999', backgroundColor: c.code, cursor: 'pointer', padding: 0 }}
+                    title={`選択したテキストに${c.name}色のマーカーを引く`}
+                  />
+                ))}
+                <span style={{ width: '1px', height: '18px', backgroundColor: '#ddd', margin: '0 2px' }} />
+                <button onClick={() => setReadingFontSize(s => Math.max(12, s - 2))} style={{ height: '26px', minWidth: '30px', padding: '0 6px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }} title="文字を小さく">
+                  A-
                 </button>
-                <button
-                  onClick={() => setReadingFontSize(s => Math.min(26, s + 2))}
-                  style={{ height: '26px', minWidth: '28px', padding: '0 6px', fontSize: '16px', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-                  title="文字を大きく"
-                >
-                  A
+                <button onClick={() => setReadingFontSize(s => Math.min(26, s + 2))} style={{ height: '26px', minWidth: '30px', padding: '0 6px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }} title="文字を大きく">
+                  A+
                 </button>
-                <button
-                  onClick={() => setReadingTheme(t => (t === 'light' ? 'sepia' : t === 'sepia' ? 'dark' : 'light'))}
-                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
-                  title="テーマ切替（ライト / セピア / ダーク）"
-                >
+                <button onClick={() => setReadingTheme(t => (t === 'light' ? 'sepia' : t === 'sepia' ? 'dark' : 'light'))} style={{ height: '26px', padding: '0 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }} title="テーマ切替">
                   {readingTheme === 'light' ? '☀️' : readingTheme === 'sepia' ? '📜' : '🌙'}
                 </button>
               </>
             )}
-            <button
-              onClick={handleOpenReadingNewTab}
-              style={{
-                padding: '4px 9px',
-                fontSize: '12px',
-                borderRadius: '5px',
-                border: '1px solid #007bff',
-                backgroundColor: '#fff',
-                color: '#007bff',
-                fontWeight: 'bold',
-                cursor: 'pointer'
-              }}
-              title="別タブでリーディングモードを開く（Windows / iOS対応）"
-            >
+            <button onClick={handleOpenReadingNewTab} style={{ padding: '4px 9px', fontSize: '12px', borderRadius: '5px', border: '1px solid #007bff', backgroundColor: '#fff', color: '#007bff', fontWeight: 'bold', cursor: 'pointer' }}>
               ↗ 別タブで読む
             </button>
           </div>
         </div>
       )}
 
-      {/* 本体：PDF または リーディングモード */}
       {currentPdfUrl ? (
         isReadingMode ? (
-          <div style={{
-            flex: 1,
-            overflowY: 'auto',
-            WebkitOverflowScrolling: 'touch',
-            backgroundColor: themeStyles.bg,
-            color: themeStyles.text,
-            padding: isMobile ? '18px 16px 60px 16px' : '24px 32px 60px 32px',
-            boxSizing: 'border-box',
-            fontFamily: 'Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif',
-            fontSize: `${readingFontSize}px`,
-            lineHeight: '1.85'
-          }}>
+          <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', backgroundColor: themeStyles.bg, color: themeStyles.text, padding: isMobile ? '18px 16px 60px' : '24px 32px 60px', boxSizing: 'border-box', fontFamily: 'Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif', fontSize: `${readingFontSize}px`, lineHeight: '1.85' }}>
             {readingLoading ? (
               <div style={{ textAlign: 'center', marginTop: '40px', fontFamily: 'sans-serif', fontSize: '14px', color: themeStyles.sub }}>
                 ⏳ {readingProgress || "リーディングモードへ変換中..."}
               </div>
             ) : (
               <div style={{ maxWidth: '720px', margin: '0 auto' }}>
+                <div style={{ fontFamily: 'sans-serif', fontSize: '11px', color: themeStyles.sub, marginBottom: '12px' }}>
+                  💡 文字を選択して上の 🖍️ 色ボタンを押すとマーカーを引けます（マーカー部分をタップで削除／全デバイス自動同期）
+                </div>
                 <h2 style={{ fontSize: '1.35em', lineHeight: '1.4', marginTop: 0, paddingBottom: '12px', borderBottom: `1px solid ${themeStyles.border}` }}>
                   {selectedPaper?.title}
                 </h2>
                 {readingPages?.map((p) => (
                   <div key={p.pageNum} style={{ marginBottom: '28px' }}>
-                    <div style={{
-                      fontFamily: 'sans-serif',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      color: themeStyles.sub,
-                      letterSpacing: '0.08em',
-                      borderBottom: `1px dashed ${themeStyles.border}`,
-                      paddingBottom: '4px',
-                      marginBottom: '12px'
-                    }}>
+                    <div style={{ fontFamily: 'sans-serif', fontSize: '11px', fontWeight: 'bold', color: themeStyles.sub, letterSpacing: '0.08em', borderBottom: `1px dashed ${themeStyles.border}`, paddingBottom: '4px', marginBottom: '12px' }}>
                       PAGE {p.pageNum}
                     </div>
-                    {p.paragraphs.map((para, idx) => (
-                      <p key={idx} style={{ margin: '0 0 1em 0', wordBreak: 'break-word' }}>
-                        {para}
-                      </p>
-                    ))}
+                    {p.paragraphs.map((para, idx) => {
+                      const paraHls = highlights.filter(h => h.pageNum === p.pageNum && h.paraIdx === idx);
+                      const segs = splitTextByHighlights(para, paraHls);
+                      return (
+                        <p key={idx} data-page={p.pageNum} data-para={idx} style={{ margin: '0 0 1em 0', wordBreak: 'break-word' }}>
+                          {segs.map((seg, sIdx) =>
+                            seg.highlight ? (
+                              <mark
+                                key={sIdx}
+                                onClick={() => handleRemoveHighlight(seg.highlight.id)}
+                                title="タップしてマーカーを削除"
+                                style={{ backgroundColor: seg.highlight.color, color: '#1f2328', padding: '0 2px', borderRadius: '3px', cursor: 'pointer' }}
+                              >
+                                {seg.text}
+                              </mark>
+                            ) : (
+                              <span key={sIdx}>{seg.text}</span>
+                            )
+                          )}
+                        </p>
+                      );
+                    })}
                   </div>
                 ))}
               </div>
@@ -1773,8 +1298,7 @@ function App() {
             <input type="file" accept="application/pdf" onChange={handleViewerPdfLoad} style={{ color: '#333', maxWidth: '100%' }} />
             {!isPersonalMode && selectedPaper?.abstract && (
               <div style={{ marginTop: '20px', padding: '12px', backgroundColor: '#f8f9fa', borderRadius: '6px', textAlign: 'left', fontSize: '12px', color: '#444', whiteSpace: 'pre-wrap' }}>
-                <strong>[Sample Paper Abstract]</strong><br />
-                {selectedPaper.abstract}
+                <strong>[Sample Paper Abstract]</strong><br />{selectedPaper.abstract}
               </div>
             )}
           </div>
@@ -1783,32 +1307,20 @@ function App() {
     </div>
   );
 
-  // AIチャット部分
   const aiSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '12px' : '15px 20px', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '8px', marginBottom: '8px', gap: '8px' }}>
         <h3 style={{ margin: 0, fontSize: '15px', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           🤖 AI Assistant — {selectedPaper?.title}
         </h3>
-        <button
-          onClick={() => selectedPaper && runInitialSummary(selectedPaper)}
-          disabled={loading}
-          style={{ background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '3px 8px', fontSize: '11px', color: '#555', cursor: 'pointer', flexShrink: 0 }}
-          title="チャット履歴をリセットして要約を再生成"
-        >
+        <button onClick={() => selectedPaper && runInitialSummary(selectedPaper)} disabled={loading} style={{ background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '3px 8px', fontSize: '11px', color: '#555', cursor: 'pointer', flexShrink: 0 }}>
           ↻ Reset
         </button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '6px 0' }}>
         {chat.map((msg, i) => (
           <div key={i} style={{ marginBottom: '12px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
-            <span style={{
-              display: 'inline-block', padding: '10px 14px', borderRadius: '10px',
-              backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f4',
-              color: msg.role === 'user' ? 'white' : 'black',
-              maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.5', whiteSpace: 'pre-wrap',
-              textAlign: 'left'
-            }}>
+            <span style={{ display: 'inline-block', padding: '10px 14px', borderRadius: '10px', backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f4', color: msg.role === 'user' ? 'white' : 'black', maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.5', whiteSpace: 'pre-wrap', textAlign: 'left' }}>
               {msg.text}
             </span>
           </div>
@@ -1832,30 +1344,13 @@ function App() {
     </div>
   );
 
-  // メモ帳部分
   const memoSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '12px' : '15px 20px', backgroundColor: '#fafafa', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexShrink: 0 }}>
-        <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#333', whiteSpace: 'nowrap' }}>
-          📝 Paper Memo / Notes
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-          <span style={{ fontSize: '12px', color: memoStatus.includes('Saved') ? '#28a745' : '#888', whiteSpace: 'nowrap' }}>
-            {memoStatus}
-          </span>
-          <button
-            onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
-            style={{
-              padding: '5px 12px',
-              fontSize: '12px',
-              backgroundColor: '#28a745',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontWeight: 'bold'
-            }}
-          >
+        <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#333' }}>📝 Paper Memo / Notes</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '12px', color: memoStatus.includes('Saved') ? '#28a745' : '#888' }}>{memoStatus}</span>
+          <button onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)} style={{ padding: '5px 12px', fontSize: '12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
             Save
           </button>
         </div>
@@ -1863,26 +1358,8 @@ function App() {
       <textarea
         value={memoText}
         onChange={(e) => setMemoText(e.target.value)}
-        placeholder={
-          isPersonalMode
-            ? "Write your notes, identification strategy, or questions here (auto-saved to cloud)..."
-            : "Write your notes, identification strategy, or questions here (Demo mode: saved locally in session)..."
-        }
-        style={{
-          flex: 1,
-          width: '100%',
-          boxSizing: 'border-box',
-          padding: '12px',
-          fontSize: isMobile ? '16px' : '14px',
-          lineHeight: '1.6',
-          border: '1px solid #ccc',
-          borderRadius: '6px',
-          backgroundColor: '#fff',
-          color: '#333',
-          resize: 'none',
-          fontFamily: 'inherit',
-          marginBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px'
-        }}
+        placeholder={isPersonalMode ? "Write your notes, identification strategy, or questions here (auto-saved to cloud)..." : "Write your notes here (Demo mode)..."}
+        style={{ flex: 1, width: '100%', boxSizing: 'border-box', padding: '12px', fontSize: isMobile ? '16px' : '14px', lineHeight: '1.6', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff', color: '#333', resize: 'none', fontFamily: 'inherit', marginBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px' }}
       />
     </div>
   );
@@ -1892,180 +1369,83 @@ function App() {
 
   return (
     <div
-      onMouseMove={handleMouseMove}
+      onMouseMove={(e) => handlePointerMove(e.clientX, e.clientY)}
       onMouseUp={handlePointerUp}
       onMouseLeave={handlePointerUp}
-      onTouchMove={handleTouchMove}
+      onTouchMove={(e) => { if ((isDraggingSidebar || isDragging || isDraggingVertical) && e.touches.length > 0) handlePointerMove(e.touches[0].clientX, e.touches[0].clientY); }}
       onTouchEnd={handlePointerUp}
-      style={{
-        display: 'flex',
-        flexDirection: isMobile ? 'column' : 'row',
-        height: '100dvh',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#333',
-        backgroundColor: '#fff',
-        userSelect: isAnyDragging ? 'none' : 'auto',
-        cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto',
-        overflow: 'hidden'
-      }}
+      style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100dvh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#333', backgroundColor: '#fff', userSelect: isAnyDragging ? 'none' : 'auto', cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto', overflow: 'hidden' }}
     >
-      {/* モバイル専用トップバー */}
       {isMobile && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #ddd', flexShrink: 0, gap: '8px' }}>
-          <button
-            onClick={() => setIsMobileMenuOpen(true)}
-            style={{ background: '#fff', border: '1px solid #ccc', borderRadius: '6px', padding: '6px 10px', fontSize: '15px', cursor: 'pointer', color: '#333', flexShrink: 0 }}
-          >
+          <button onClick={() => setIsMobileMenuOpen(true)} style={{ background: '#fff', border: '1px solid #ccc', borderRadius: '6px', padding: '6px 10px', fontSize: '15px', cursor: 'pointer', color: '#333', flexShrink: 0 }}>
             ☰ 論文一覧
           </button>
           <div style={{ flex: 1, fontSize: '13px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center', color: '#333' }}>
             {selectedPaper ? selectedPaper.title : "📚 Paper Manager"}
           </div>
-          <span
-            onClick={handleToggleMode}
-            style={{ fontSize: '10px', padding: '3px 7px', borderRadius: '10px', backgroundColor: isPersonalMode ? '#e6f4ea' : '#e8f0fe', color: isPersonalMode ? '#137333' : '#1a73e8', fontWeight: 'bold', flexShrink: 0 }}
-          >
+          <span onClick={handleToggleMode} style={{ fontSize: '10px', padding: '3px 7px', borderRadius: '10px', backgroundColor: isPersonalMode ? '#e6f4ea' : '#e8f0fe', color: isPersonalMode ? '#137333' : '#1a73e8', fontWeight: 'bold', flexShrink: 0 }}>
             {isPersonalMode ? "🔓" : "Demo"}
           </span>
         </div>
       )}
 
-      {/* モバイル用スライドインドロワー */}
       {isMobile && isMobileMenuOpen && (
-        <div
-          onClick={() => setIsMobileMenuOpen(false)}
-          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex' }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ width: '82%', maxWidth: '320px', height: '100%', backgroundColor: '#f8f9fa', padding: '16px', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', boxShadow: '2px 0 12px rgba(0,0,0,0.2)' }}
-          >
+        <div onClick={() => setIsMobileMenuOpen(false)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: '82%', maxWidth: '320px', height: '100%', backgroundColor: '#f8f9fa', padding: '16px', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', boxShadow: '2px 0 12px rgba(0,0,0,0.2)' }}>
             {sidebarContent}
           </div>
         </div>
       )}
 
-      {/* PC / iPad用サイドバー */}
       {!isMobile && !isSidebarOpen && (
         <div style={{ width: '40px', backgroundColor: '#f8f9fa', borderRight: '1px solid #ccc', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '15px', flexShrink: 0 }}>
-          <button
-            onClick={() => setSidebarWidth(280)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', padding: '10px', color: '#001f3f' }}
-            title="Show Sidebar"
-          >
-            ▶
-          </button>
+          <button onClick={() => setSidebarWidth(280)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', padding: '10px', color: '#001f3f' }}>▶</button>
         </div>
       )}
 
       {!isMobile && (
-        <div style={{
-          width: `${sidebarWidth}px`,
-          padding: isSidebarOpen ? '15px' : '0px',
-          backgroundColor: '#f8f9fa',
-          display: 'flex',
-          flexDirection: 'column',
-          flexShrink: 0,
-          overflow: 'hidden',
-          boxSizing: 'border-box'
-        }}>
+        <div style={{ width: `${sidebarWidth}px`, padding: isSidebarOpen ? '15px' : '0px', backgroundColor: '#f8f9fa', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden', boxSizing: 'border-box' }}>
           {sidebarContent}
         </div>
       )}
 
-      {/* PC / iPad 左サイドバー用スライドバー */}
       {!isMobile && isSidebarOpen && (
-        <div
-          onMouseDown={() => setIsDraggingSidebar(true)}
-          onTouchStart={() => setIsDraggingSidebar(true)}
-          onDoubleClick={() => setSidebarWidth(0)}
-          style={{
-            width: '6px',
-            flexShrink: 0,
-            cursor: 'col-resize',
-            backgroundColor: isDraggingSidebar ? '#007bff' : '#ddd',
-            transition: 'background-color 0.2s',
-            zIndex: 10,
-            touchAction: 'none'
-          }}
-          title="Drag to resize sidebar (Double-click to collapse)"
-        />
+        <div onMouseDown={() => setIsDraggingSidebar(true)} onTouchStart={() => setIsDraggingSidebar(true)} onDoubleClick={() => setSidebarWidth(0)} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', backgroundColor: isDraggingSidebar ? '#007bff' : '#ddd', zIndex: 10, touchAction: 'none' }} />
       )}
 
-      {/* メインエリア */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fff', overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
         {isAdding ? (
           <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto', width: '100%', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
             <h2 style={{ color: '#333' }}>Register New Paper</h2>
-
             <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
-                Folder / Sub-folder Path (use "/" for nested folders)
-              </label>
-              <input
-                type="text"
-                value={newFolder}
-                onChange={(e) => setNewFolder(e.target.value)}
-                placeholder="e.g., Labor Economics or Labor Economics/Gender"
-                style={{ width: '100%', padding: '10px', fontSize: isMobile ? '16px' : '14px', border: '1px solid #ccc', borderRadius: '4px', color: '#333', backgroundColor: '#fff', boxSizing: 'border-box' }}
-              />
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Folder / Sub-folder Path (use "/" for nested folders)</label>
+              <input type="text" value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="e.g., Labor Economics/Gender" style={{ width: '100%', padding: '10px', fontSize: isMobile ? '16px' : '14px', border: '1px solid #ccc', borderRadius: '4px', boxSizing: 'border-box' }} />
             </div>
-
             <div style={{ margin: '20px 0', padding: '20px', backgroundColor: '#f0f7ff', borderRadius: '8px', border: '1px dashed #007bff' }}>
               <h3 style={{ marginTop: 0, fontSize: '16px', color: '#007bff' }}>📄 Auto-extract & Link PDF</h3>
               <p style={{ fontSize: '14px', color: '#555' }}>Select a PDF file. It will be linked to this paper so it opens automatically next time.</p>
-              <input type="file" accept="application/pdf" onChange={handlePdfUpload} disabled={loading} style={{ color: '#333', maxWidth: '100%' }} />
+              <input type="file" accept="application/pdf" onChange={handlePdfUpload} disabled={loading} style={{ maxWidth: '100%' }} />
               {pendingPdfFile && <p style={{ color: '#28a745', fontSize: '13px', fontWeight: 'bold', marginTop: '8px' }}>✅ PDF linked: {pendingPdfFile.name}</p>}
               {loading && <p style={{ color: '#d9534f', fontWeight: 'bold', marginTop: '10px' }}>⏳ {loadingMessage}</p>}
             </div>
-
-            <div style={{ marginTop: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Title</label>
-              <input
-                type="text"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                style={{ width: '100%', padding: '10px', fontSize: isMobile ? '16px' : '14px', marginBottom: '20px', border: '1px solid #ccc', borderRadius: '4px', color: '#333', backgroundColor: '#fff', boxSizing: 'border-box' }}
-              />
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Extracted Abstract</label>
-              <textarea
-                value={newAbstract}
-                onChange={(e) => setNewAbstract(e.target.value)}
-                style={{ width: '100%', height: '200px', padding: '10px', fontSize: isMobile ? '16px' : '14px', marginBottom: '20px', border: '1px solid #ccc', borderRadius: '4px', color: '#333', backgroundColor: '#fff', boxSizing: 'border-box' }}
-              />
-              <div style={{ display: 'flex', gap: '10px', paddingBottom: '24px' }}>
-                <button onClick={handleAddPaper} disabled={loading} style={{ padding: '10px 20px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
-                  {isPersonalMode ? "Save to Database" : "Add (Demo Mode)"}
-                </button>
-                <button onClick={() => { setIsAdding(false); setLoading(false); setLoadingMessage(""); }} style={{ padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
-              </div>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Title</label>
+            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} style={{ width: '100%', padding: '10px', fontSize: isMobile ? '16px' : '14px', marginBottom: '20px', border: '1px solid #ccc', borderRadius: '4px', boxSizing: 'border-box' }} />
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Extracted Abstract</label>
+            <textarea value={newAbstract} onChange={(e) => setNewAbstract(e.target.value)} style={{ width: '100%', height: '200px', padding: '10px', fontSize: isMobile ? '16px' : '14px', marginBottom: '20px', border: '1px solid #ccc', borderRadius: '4px', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: '10px', paddingBottom: '24px' }}>
+              <button onClick={handleAddPaper} disabled={loading} style={{ padding: '10px 20px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                {isPersonalMode ? "Save to Database" : "Add (Demo Mode)"}
+              </button>
+              <button onClick={() => { setIsAdding(false); setLoading(false); setLoadingMessage(""); }} style={{ padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
             </div>
           </div>
         ) : selectedPaper ? (
           isMobile ? (
-            /* モバイル：タブ切り替えレイアウト */
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
               <div style={{ display: 'flex', borderBottom: '1px solid #ddd', backgroundColor: '#f8f9fa', flexShrink: 0 }}>
-                {[
-                  { id: "pdf", label: "📄 PDF" },
-                  { id: "ai", label: "🤖 AI" },
-                  { id: "memo", label: "📝 Memo" }
-                ].map(tab => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setMobileTab(tab.id)}
-                    style={{
-                      flex: 1,
-                      padding: '10px 6px',
-                      border: 'none',
-                      borderBottom: mobileTab === tab.id ? '3px solid #007bff' : '3px solid transparent',
-                      backgroundColor: mobileTab === tab.id ? '#fff' : 'transparent',
-                      color: mobileTab === tab.id ? '#007bff' : '#555',
-                      fontWeight: mobileTab === tab.id ? 'bold' : 'normal',
-                      fontSize: '14px',
-                      cursor: 'pointer'
-                    }}
-                  >
+                {[{ id: "pdf", label: "📄 PDF" }, { id: "ai", label: "🤖 AI" }, { id: "memo", label: "📝 Memo" }].map(tab => (
+                  <button key={tab.id} onClick={() => setMobileTab(tab.id)} style={{ flex: 1, padding: '10px 6px', border: 'none', borderBottom: mobileTab === tab.id ? '3px solid #007bff' : '3px solid transparent', backgroundColor: mobileTab === tab.id ? '#fff' : 'transparent', color: mobileTab === tab.id ? '#007bff' : '#555', fontWeight: mobileTab === tab.id ? 'bold' : 'normal', fontSize: '14px', cursor: 'pointer' }}>
                     {tab.label}
                   </button>
                 ))}
@@ -2077,71 +1457,17 @@ function App() {
               </div>
             </div>
           ) : (
-            /* PC / iPad：3分割リサイズレイアウト */
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0 }}>
               <div style={{ width: isRightCollapsed ? 'calc(100% - 6px)' : `${leftWidth}%`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
                 {pdfSection}
               </div>
-
-              <div
-                onMouseDown={() => setIsDragging(true)}
-                onTouchStart={() => setIsDragging(true)}
-                onDoubleClick={() => setLeftWidth(prev => (prev >= 100 ? 50 : 100))}
-                style={{
-                  width: '6px',
-                  flexShrink: 0,
-                  cursor: 'col-resize',
-                  backgroundColor: isDragging ? '#007bff' : '#ddd',
-                  transition: 'background-color 0.2s',
-                  zIndex: 10,
-                  touchAction: 'none'
-                }}
-                title="Drag to resize horizontally (Double-click to toggle right panel)"
-              />
-
-              <div
-                ref={rightPaneRef}
-                style={{
-                  flex: 1,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  backgroundColor: '#fff',
-                  minWidth: 0,
-                  overflow: 'hidden'
-                }}
-              >
-                <div style={{
-                  height: aiHeightPercent >= 100 ? 'calc(100% - 6px)' : `${aiHeightPercent}%`,
-                  flexShrink: 0,
-                  minHeight: 0,
-                  overflow: 'hidden',
-                  display: isRightCollapsed || aiHeightPercent <= 0 ? 'none' : 'block'
-                }}>
+              <div onMouseDown={() => setIsDragging(true)} onTouchStart={() => setIsDragging(true)} onDoubleClick={() => setLeftWidth(prev => (prev >= 100 ? 50 : 100))} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', backgroundColor: isDragging ? '#007bff' : '#ddd', zIndex: 10, touchAction: 'none' }} />
+              <div ref={rightPaneRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fff', minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ height: aiHeightPercent >= 100 ? 'calc(100% - 6px)' : `${aiHeightPercent}%`, flexShrink: 0, minHeight: 0, overflow: 'hidden', display: isRightCollapsed || aiHeightPercent <= 0 ? 'none' : 'block' }}>
                   {aiSection}
                 </div>
-
-                <div
-                  onMouseDown={() => setIsDraggingVertical(true)}
-                  onTouchStart={() => setIsDraggingVertical(true)}
-                  onDoubleClick={() => setAiHeightPercent(prev => (prev <= 0 ? 50 : 0))}
-                  style={{
-                    height: '6px',
-                    flexShrink: 0,
-                    cursor: 'row-resize',
-                    backgroundColor: isDraggingVertical ? '#007bff' : '#ddd',
-                    transition: 'background-color 0.2s',
-                    zIndex: 10,
-                    touchAction: 'none'
-                  }}
-                  title="Drag to resize AI & Memo (Double-click to toggle AI)"
-                />
-
-                <div style={{
-                  flex: 1,
-                  minHeight: 0,
-                  overflow: 'hidden',
-                  display: isRightCollapsed || aiHeightPercent >= 100 ? 'none' : 'block'
-                }}>
+                <div onMouseDown={() => setIsDraggingVertical(true)} onTouchStart={() => setIsDraggingVertical(true)} onDoubleClick={() => setAiHeightPercent(prev => (prev <= 0 ? 50 : 0))} style={{ height: '6px', flexShrink: 0, cursor: 'row-resize', backgroundColor: isDraggingVertical ? '#007bff' : '#ddd', zIndex: 10, touchAction: 'none' }} />
+                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: isRightCollapsed || aiHeightPercent >= 100 ? 'none' : 'block' }}>
                   {memoSection}
                 </div>
               </div>
@@ -2150,11 +1476,7 @@ function App() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#666', gap: '10px', padding: '20px', textAlign: 'center' }}>
             <h3>{isMobile ? "👆 左上の「☰ 論文一覧」から論文を選択してください" : "👈 Please select a paper from the left menu"}</h3>
-            {!isPersonalMode && (
-              <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
-                Currently in Demo Mode — Select a sample paper to test AI summary, PDF viewer, and Notes.
-              </p>
-            )}
+            {!isPersonalMode && <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>Currently in Demo Mode — Select a sample paper to test AI summary, PDF viewer, and Notes.</p>}
           </div>
         )}
       </div>
