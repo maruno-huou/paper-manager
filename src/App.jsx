@@ -73,6 +73,223 @@ const detectIOS = () => {
   );
 };
 
+// HTMLエスケープ（別タブ出力時の数式や記号崩れ防止）
+const escapeHtml = (str = "") =>
+  str
+    .replace(/&/g, "&")
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/"/g, """)
+    .replace(/'/g, "'");
+
+// ★ PDFから読みやすい段落テキストを抽出する関数（リーディングモード用）
+const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
+  const response = await fetch(pdfUrl);
+  const arrayBuffer = await response.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    if (onProgress) onProgress(pageNum, pdf.numPages);
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    const paragraphs = [];
+    let currentPara = "";
+    let lastY = null;
+
+    for (const item of textContent.items) {
+      const str = item.str;
+      if (!str) continue;
+      const y = item.transform ? item.transform[5] : null;
+      const fontHeight = item.height || (item.transform ? Math.abs(item.transform[0]) : 12) || 12;
+
+      if (lastY !== null && y !== null) {
+        const yDiff = Math.abs(lastY - y);
+        if (yDiff > fontHeight * 1.65) {
+          if (currentPara.trim()) paragraphs.push(currentPara.trim());
+          currentPara = str;
+        } else if (yDiff > fontHeight * 0.45) {
+          // 行末ハイフンによる単語分断を結合
+          if (currentPara.endsWith("-")) {
+            currentPara = currentPara.slice(0, -1) + str.trimStart();
+          } else {
+            currentPara += " " + str;
+          }
+        } else {
+          currentPara += str;
+        }
+      } else {
+        currentPara += str;
+      }
+
+      if (y !== null) lastY = y;
+    }
+
+    if (currentPara.trim()) paragraphs.push(currentPara.trim());
+    pages.push({ pageNum, paragraphs });
+  }
+
+  return pages;
+};
+
+// ★ 別タブ用のスタンドアロン・リーディングモードHTMLを生成
+const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontSize = 17) => {
+  const safeTitle = escapeHtml(title || "Reading Mode");
+  const bodyHtml = pages
+    .map(
+      (p) => `
+      <section class="page-block">
+        <div class="page-label">Page ${p.pageNum}</div>
+        ${p.paragraphs.map((para) => `<p>${escapeHtml(para)}</p>`).join("\n")}
+      </section>`
+    )
+    .join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>📖 ${safeTitle}</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --text: #1f2328;
+      --sub: #656d76;
+      --bar-bg: rgba(248, 249, 250, 0.94);
+      --border: #e1e4e8;
+      --btn-bg: #ffffff;
+    }
+    body[data-theme="sepia"] {
+      --bg: #f6efe2;
+      --text: #3b2f23;
+      --sub: #7a6855;
+      --bar-bg: rgba(239, 229, 211, 0.95);
+      --border: #dfd1b8;
+      --btn-bg: #fbf6ec;
+    }
+    body[data-theme="dark"] {
+      --bg: #16181c;
+      --text: #e6e8eb;
+      --sub: #9aa0a6;
+      --bar-bg: rgba(28, 31, 38, 0.95);
+      --border: #2f343d;
+      --btn-bg: #242830;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Georgia, "Hiragino Mincho ProN", "Yu Mincho", -apple-system, BlinkMacSystemFont, serif;
+      transition: background 0.2s, color 0.2s;
+      -webkit-font-smoothing: antialiased;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 16px;
+      padding-top: max(10px, env(safe-area-inset-top));
+      background: var(--bar-bg);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .toolbar-title {
+      font-size: 13px;
+      font-weight: 700;
+      max-width: 48vw;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      background: var(--btn-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:active { opacity: 0.7; }
+    main {
+      max-width: 740px;
+      margin: 0 auto;
+      padding: 28px 20px 80px 20px;
+      font-size: ${initialFontSize}px;
+      line-height: 1.85;
+      letter-spacing: 0.01em;
+    }
+    h1 {
+      font-size: 1.55em;
+      line-height: 1.35;
+      margin: 0 0 28px 0;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .page-block {
+      margin-bottom: 32px;
+    }
+    .page-label {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--sub);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 24px 0 12px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px dashed var(--border);
+    }
+    p {
+      margin: 0 0 1.05em 0;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body data-theme="${initialTheme}">
+  <header class="toolbar">
+    <div class="toolbar-title">📖 ${safeTitle}</div>
+    <div class="controls">
+      <button onclick="changeSize(-2)">A-</button>
+      <button onclick="changeSize(2)">A+</button>
+      <button onclick="setTheme('light')">☀️</button>
+      <button onclick="setTheme('sepia')">📜</button>
+      <button onclick="setTheme('dark')">🌙</button>
+    </div>
+  </header>
+  <main id="article">
+    <h1>${safeTitle}</h1>
+    ${bodyHtml}
+  </main>
+  <script>
+    let currentSize = ${initialFontSize};
+    function changeSize(delta) {
+      currentSize = Math.min(28, Math.max(13, currentSize + delta));
+      document.getElementById('article').style.fontSize = currentSize + 'px';
+    }
+    function setTheme(t) {
+      document.body.setAttribute('data-theme', t);
+    }
+  </script>
+</body>
+</html>`;
+};
+
 // IndexedDB（PDFローカル保存用）
 const openPdfDB = () => {
   return new Promise((resolve, reject) => {
@@ -186,7 +403,7 @@ function PdfCanvasViewer({ pdfUrl }) {
       } catch (err) {
         if (!cancelled) {
           console.error("PDF canvas render error:", err);
-          setErrorMsg("PDFの描画に失敗しました。下のボタンから別タブで開いてください。");
+          setErrorMsg("PDFの描画に失敗しました。");
         }
       } finally {
         if (!cancelled) setRendering(false);
@@ -201,19 +418,11 @@ function PdfCanvasViewer({ pdfUrl }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: '#e9ecef' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: '#fff', borderBottom: '1px solid #ddd', fontSize: '12px', flexShrink: 0 }}>
-        <span style={{ color: '#555' }}>
-          {rendering ? "⏳ PDFを読み込み中..." : `📄 全 ${pageCount} ページ`}
-        </span>
-        <a
-          href={pdfUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ color: '#007bff', textDecoration: 'none', fontWeight: 'bold' }}
-        >
-          ↗ 別タブで開く
-        </a>
-      </div>
+      {rendering && (
+        <div style={{ padding: '6px 12px', backgroundColor: '#fff3cd', color: '#856404', fontSize: '12px', textAlign: 'center', flexShrink: 0 }}>
+          ⏳ PDFを読み込み中... {pageCount > 0 ? `(全 ${pageCount} ページ)` : ""}
+        </div>
+      )}
       <div
         ref={containerRef}
         style={{
@@ -265,6 +474,14 @@ function App() {
   const [currentPdfUrl, setCurrentPdfUrl] = useState(null);
   const [savedPdfIds, setSavedPdfIds] = useState({});
 
+  // ★ リーディングモード用の状態
+  const [isReadingMode, setIsReadingMode] = useState(false);
+  const [readingPages, setReadingPages] = useState(null);
+  const [readingLoading, setReadingLoading] = useState(false);
+  const [readingProgress, setReadingProgress] = useState("");
+  const [readingTheme, setReadingTheme] = useState(() => loadStorage("pm_readingTheme", "light"));
+  const [readingFontSize, setReadingFontSize] = useState(() => loadStorage("pm_readingFontSize", 16));
+
   // レイアウト状態（前回サイズを復元）
   const [sidebarWidth, setSidebarWidth] = useState(() => loadStorage("pm_sidebarWidth", 280));
   const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
@@ -300,6 +517,13 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat, loading, mobileTab]);
 
+  // PDFが切り替わったらリーディングキャッシュをリセット
+  useEffect(() => {
+    setReadingPages(null);
+    setIsReadingMode(false);
+    setReadingProgress("");
+  }, [currentPdfUrl]);
+
   // 各種設定・状態の自動保存（次回起動時に復元するため）
   useEffect(() => saveStorage("pm_aiLanguage", aiLanguage), [aiLanguage]);
   useEffect(() => saveStorage("pm_sidebarWidth", sidebarWidth), [sidebarWidth]);
@@ -310,6 +534,87 @@ function App() {
   useEffect(() => saveStorage("pm_expandedFolders", expandedFolders), [expandedFolders]);
   useEffect(() => saveStorage("pm_mobileTab", mobileTab), [mobileTab]);
   useEffect(() => saveStorage("pm_chats", chatHistoryMap), [chatHistoryMap]);
+  useEffect(() => saveStorage("pm_readingTheme", readingTheme), [readingTheme]);
+  useEffect(() => saveStorage("pm_readingFontSize", readingFontSize), [readingFontSize]);
+
+  // ★ アプリ内リーディングモードへ切り替え
+  const handleToggleReadingMode = async () => {
+    if (isReadingMode) {
+      setIsReadingMode(false);
+      return;
+    }
+    setIsReadingMode(true);
+    if (!currentPdfUrl || readingPages) return;
+
+    setReadingLoading(true);
+    setReadingProgress("PDFからテキストを抽出中...");
+    try {
+      const pages = await extractReadingPagesFromPdf(currentPdfUrl, (cur, total) => {
+        setReadingProgress(`ページを変換中 (${cur} / ${total})...`);
+      });
+      setReadingPages(pages);
+    } catch (err) {
+      console.error("Reading mode extraction failed:", err);
+      alert("リーディングモードへの変換に失敗しました: " + err.message);
+      setIsReadingMode(false);
+    } finally {
+      setReadingLoading(false);
+      setReadingProgress("");
+    }
+  };
+
+  // ★ 別タブでリーディングモードを開く（Windows & iOS Safari 両対応）
+  const handleOpenReadingNewTab = async () => {
+    const title = selectedPaper?.title || "Reading Mode";
+
+    // iOS Safariのポップアップブロック回避のため、クリック直後に同期的に空タブを開く
+    const newWin = window.open("", "_blank");
+    if (!newWin) {
+      alert("ポップアップがブロックされました。ブラウザの設定でポップアップを許可してください。");
+      return;
+    }
+
+    newWin.document.open();
+    newWin.document.write(
+      `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>読み込み中...</title></head><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#555;"><div>⏳ リーディングモードを準備しています...</div></body></html>`
+    );
+    newWin.document.close();
+
+    try {
+      let pagesToShow = readingPages;
+
+      if (!pagesToShow && currentPdfUrl) {
+        pagesToShow = await extractReadingPagesFromPdf(currentPdfUrl);
+        setReadingPages(pagesToShow);
+      } else if (!pagesToShow && selectedPaper?.abstract) {
+        // PDFがない論文（デモ論文など）でもAbstract＋メモをリーディング表示可能に
+        pagesToShow = [
+          {
+            pageNum: 1,
+            paragraphs: [
+              ...(selectedPaper.abstract || "").split("\n").filter(Boolean),
+              ...(memoText ? ["--- Notes ---", ...memoText.split("\n").filter(Boolean)] : [])
+            ]
+          }
+        ];
+      }
+
+      if (!pagesToShow || pagesToShow.length === 0) {
+        newWin.close();
+        alert("表示できるPDFまたはテキストがありません。");
+        return;
+      }
+
+      const html = buildReadingModeHtml(title, pagesToShow, readingTheme, readingFontSize);
+      newWin.document.open();
+      newWin.document.write(html);
+      newWin.document.close();
+    } catch (err) {
+      console.error("Failed to open reading mode tab:", err);
+      newWin.close();
+      alert("別タブでのリーディングモード生成に失敗しました: " + err.message);
+    }
+  };
 
   // チャット更新ヘルパー（現在の論文のチャット履歴も同時に保存）
   const updateChatForPaper = (paperId, newChatArray) => {
@@ -807,7 +1112,6 @@ function App() {
       }
     }
 
-    // ★ 前回のチャット履歴が残っていればそのまま復元（シャットダウン後も維持）
     const existingChat = loadStorage("pm_chats", {})[paper.id];
     if (existingChat && existingChat.length > 0 && !options.forceRefresh) {
       setChat(existingChat);
@@ -1190,6 +1494,13 @@ function App() {
     );
   };
 
+  // リーディングモードの配色テーマ
+  const themeStyles = {
+    light: { bg: '#ffffff', text: '#1f2328', sub: '#656d76', border: '#e1e4e8' },
+    sepia: { bg: '#f6efe2', text: '#3b2f23', sub: '#7a6855', border: '#dfd1b8' },
+    dark: { bg: '#16181c', text: '#e6e8eb', sub: '#9aa0a6', border: '#2f343d' }
+  }[readingTheme] || { bg: '#ffffff', text: '#1f2328', sub: '#656d76', border: '#e1e4e8' };
+
   // サイドバーの中身（PC固定 / スマホはドロワーで共通利用）
   const sidebarContent = (
     <>
@@ -1301,11 +1612,154 @@ function App() {
     </>
   );
 
-  // PDFビューア部分（iOSはCanvas描画、PCはiframe）
+  // ★ PDF / リーディングモード切り替えセクション
   const pdfSection = (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fdfdfd', height: '100%', overflow: 'hidden' }}>
+      {/* 上部ビューアツールバー（PDFがあるとき表示） */}
+      {(currentPdfUrl || (!isPersonalMode && selectedPaper?.abstract)) && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '6px',
+          padding: '6px 10px',
+          backgroundColor: '#f8f9fa',
+          borderBottom: '1px solid #ddd',
+          flexShrink: 0
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            {currentPdfUrl && (
+              <>
+                <button
+                  onClick={() => setIsReadingMode(false)}
+                  style={{
+                    padding: '4px 9px',
+                    fontSize: '12px',
+                    borderRadius: '5px',
+                    border: '1px solid #ccc',
+                    cursor: 'pointer',
+                    fontWeight: !isReadingMode ? 'bold' : 'normal',
+                    backgroundColor: !isReadingMode ? '#007bff' : '#fff',
+                    color: !isReadingMode ? '#fff' : '#333'
+                  }}
+                >
+                  📄 PDF
+                </button>
+                <button
+                  onClick={handleToggleReadingMode}
+                  style={{
+                    padding: '4px 9px',
+                    fontSize: '12px',
+                    borderRadius: '5px',
+                    border: '1px solid #ccc',
+                    cursor: 'pointer',
+                    fontWeight: isReadingMode ? 'bold' : 'normal',
+                    backgroundColor: isReadingMode ? '#007bff' : '#fff',
+                    color: isReadingMode ? '#fff' : '#333'
+                  }}
+                >
+                  📖 リーディング
+                </button>
+              </>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+            {isReadingMode && (
+              <>
+                <button
+                  onClick={() => setReadingFontSize(s => Math.max(12, s - 2))}
+                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
+                  title="文字を小さく"
+                >
+                  A-
+                </button>
+                <button
+                  onClick={() => setReadingFontSize(s => Math.min(26, s + 2))}
+                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
+                  title="文字を大きく"
+                >
+                  A+
+                </button>
+                <button
+                  onClick={() => setReadingTheme(t => (t === 'light' ? 'sepia' : t === 'sepia' ? 'dark' : 'light'))}
+                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
+                  title="テーマ切替（ライト / セピア / ダーク）"
+                >
+                  {readingTheme === 'light' ? '☀️' : readingTheme === 'sepia' ? '📜' : '🌙'}
+                </button>
+              </>
+            )}
+            <button
+              onClick={handleOpenReadingNewTab}
+              style={{
+                padding: '4px 9px',
+                fontSize: '12px',
+                borderRadius: '5px',
+                border: '1px solid #007bff',
+                backgroundColor: '#fff',
+                color: '#007bff',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+              title="別タブでリーディングモードを開く（Windows / iOS対応）"
+            >
+              ↗ 別タブで読む
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 本体：PDF または リーディングモード */}
       {currentPdfUrl ? (
-        isIOS ? (
+        isReadingMode ? (
+          <div style={{
+            flex: 1,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            backgroundColor: themeStyles.bg,
+            color: themeStyles.text,
+            padding: isMobile ? '18px 16px 60px 16px' : '24px 32px 60px 32px',
+            boxSizing: 'border-box',
+            fontFamily: 'Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif',
+            fontSize: `${readingFontSize}px`,
+            lineHeight: '1.85'
+          }}>
+            {readingLoading ? (
+              <div style={{ textAlign: 'center', marginTop: '40px', fontFamily: 'sans-serif', fontSize: '14px', color: themeStyles.sub }}>
+                ⏳ {readingProgress || "リーディングモードへ変換中..."}
+              </div>
+            ) : (
+              <div style={{ maxWidth: '720px', margin: '0 auto' }}>
+                <h2 style={{ fontSize: '1.35em', lineHeight: '1.4', marginTop: 0, paddingBottom: '12px', borderBottom: `1px solid ${themeStyles.border}` }}>
+                  {selectedPaper?.title}
+                </h2>
+                {readingPages?.map((p) => (
+                  <div key={p.pageNum} style={{ marginBottom: '28px' }}>
+                    <div style={{
+                      fontFamily: 'sans-serif',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      color: themeStyles.sub,
+                      letterSpacing: '0.08em',
+                      borderBottom: `1px dashed ${themeStyles.border}`,
+                      paddingBottom: '4px',
+                      marginBottom: '12px'
+                    }}>
+                      PAGE {p.pageNum}
+                    </div>
+                    {p.paragraphs.map((para, idx) => (
+                      <p key={idx} style={{ margin: '0 0 1em 0', wordBreak: 'break-word' }}>
+                        {para}
+                      </p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : isIOS ? (
           <PdfCanvasViewer pdfUrl={currentPdfUrl} />
         ) : (
           <div style={{ flex: 1, pointerEvents: (isDraggingSidebar || isDragging || isDraggingVertical) ? 'none' : 'auto' }}>
@@ -1456,7 +1910,7 @@ function App() {
         overflow: 'hidden'
       }}
     >
-      {/* ★ モバイル（iPhone等）専用トップバー */}
+      {/* モバイル専用トップバー */}
       {isMobile && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #ddd', flexShrink: 0, gap: '8px' }}>
           <button
@@ -1477,7 +1931,7 @@ function App() {
         </div>
       )}
 
-      {/* ★ モバイル用スライドインドロワー（サイドバー） */}
+      {/* モバイル用スライドインドロワー */}
       {isMobile && isMobileMenuOpen && (
         <div
           onClick={() => setIsMobileMenuOpen(false)}
@@ -1492,7 +1946,7 @@ function App() {
         </div>
       )}
 
-      {/* ★ PC / iPad用サイドバー */}
+      {/* PC / iPad用サイドバー */}
       {!isMobile && !isSidebarOpen && (
         <div style={{ width: '40px', backgroundColor: '#f8f9fa', borderRight: '1px solid #ccc', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '15px', flexShrink: 0 }}>
           <button
@@ -1590,7 +2044,7 @@ function App() {
           </div>
         ) : selectedPaper ? (
           isMobile ? (
-            /* ★ モバイル（iPhone等）：タブ切り替えレイアウト */
+            /* モバイル：タブ切り替えレイアウト */
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
               <div style={{ display: 'flex', borderBottom: '1px solid #ddd', backgroundColor: '#f8f9fa', flexShrink: 0 }}>
                 {[
@@ -1624,7 +2078,7 @@ function App() {
               </div>
             </div>
           ) : (
-            /* ★ PC / iPad：3分割リサイズレイアウト */
+            /* PC / iPad：3分割リサイズレイアウト */
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0 }}>
               <div style={{ width: isRightCollapsed ? 'calc(100% - 6px)' : `${leftWidth}%`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
                 {pdfSection}
