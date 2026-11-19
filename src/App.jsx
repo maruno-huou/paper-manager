@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { initializeFirestore, collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
@@ -321,6 +321,7 @@ function App() {
 
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
+  const isEditingMemoRef = useRef(false);
 
   const [isAdding, setIsAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -361,6 +362,7 @@ function App() {
 
   const hasRestoredForMode = useRef(null);
   const isSidebarOpen = sidebarWidth > 0;
+  const selectedPaperId = selectedPaper?.id || null;
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -377,6 +379,49 @@ function App() {
     setIsReadingMode(false);
     setReadingProgress("");
   }, [currentPdfUrl]);
+
+  // ★ リアルタイム同期（onSnapshot）：チャット・メモ・マーカーを別デバイスと即時同期
+  useEffect(() => {
+    if (!isPersonalMode || !selectedPaperId) return;
+
+    const unsub = onSnapshot(
+      doc(db, "papers", selectedPaperId),
+      (snap) => {
+        if (!snap.exists()) return;
+        // 自分の端末からの書き込み直後のローカル反映は無視してカーソル飛びを防ぐ
+        if (snap.metadata.hasPendingWrites) return;
+
+        const data = { id: snap.id, ...snap.data() };
+
+        setSelectedPaper((prev) => (prev && prev.id === data.id ? { ...prev, ...data } : prev));
+        setPapers((prev) => prev.map((p) => (p.id === data.id ? { ...p, ...data } : p)));
+
+        // チャットのリアルタイム反映
+        if (Array.isArray(data.chat)) {
+          setChat((prev) => (JSON.stringify(prev) === JSON.stringify(data.chat) ? prev : data.chat));
+          setChatHistoryMap((prev) => ({ ...prev, [data.id]: data.chat }));
+        }
+
+        // マーカーのリアルタイム反映
+        if (Array.isArray(data.highlights)) {
+          setHighlights((prev) =>
+            JSON.stringify(prev) === JSON.stringify(data.highlights) ? prev : data.highlights
+          );
+        }
+
+        // メモのリアルタイム反映（自分がこの端末で編集中でないときのみ反映）
+        if (!isEditingMemoRef.current) {
+          const remoteMemo = data.memo || "";
+          setMemoText((prev) => (prev === remoteMemo ? prev : remoteMemo));
+        }
+      },
+      (error) => {
+        console.error("Realtime sync error:", error);
+      }
+    );
+
+    return () => unsub();
+  }, [isPersonalMode, selectedPaperId]);
 
   // iOSでもボタン押下前に選択テキストを保持するリスナー
   useEffect(() => {
@@ -644,6 +689,7 @@ function App() {
     if (!isPersonalMode) {
       setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, memo: textToSave } : p)));
       setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, memo: textToSave } : prev));
+      isEditingMemoRef.current = false;
       setMemoStatus("Saved (Demo) ✓");
       return;
     }
@@ -652,6 +698,7 @@ function App() {
       await updateDoc(doc(db, "papers", paperId), { memo: textToSave });
       setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, memo: textToSave } : p)));
       setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, memo: textToSave } : prev));
+      isEditingMemoRef.current = false;
       setMemoStatus("Saved ✓");
     } catch (error) {
       setMemoStatus("Save failed");
@@ -660,7 +707,11 @@ function App() {
 
   useEffect(() => {
     if (!selectedPaper) return;
-    if (memoText === (selectedPaper.memo || "")) return;
+    if (memoText === (selectedPaper.memo || "")) {
+      isEditingMemoRef.current = false;
+      return;
+    }
+    isEditingMemoRef.current = true;
     setMemoStatus("Editing...");
     const timer = setTimeout(() => handleSaveMemo(selectedPaper.id, memoText), 1200);
     return () => clearTimeout(timer);
@@ -864,11 +915,12 @@ function App() {
     setLoading(false);
   };
 
-  // ★ 論文選択時：クラウドから最新のチャット履歴・メモ・マーカーを取得して同期
+  // 論文選択時：クラウドから最新のチャット履歴・メモ・マーカーを取得して同期
   const handleSelectPaper = async (paper, options = {}) => {
     const modeKey = isPersonalMode ? "personal" : "demo";
     saveStorage(`pm_lastPaperId_${modeKey}`, paper.id);
 
+    isEditingMemoRef.current = false;
     setIsAdding(false);
     setIsMobileMenuOpen(false);
     setSelectedPaper(paper);
@@ -1246,7 +1298,7 @@ ${extractedText}`;
             ) : (
               <div style={{ maxWidth: '720px', margin: '0 auto' }}>
                 <div style={{ fontFamily: 'sans-serif', fontSize: '11px', color: themeStyles.sub, marginBottom: '12px' }}>
-                  💡 文字を選択して上の 🖍️ 色ボタンを押すとマーカーを引けます（マーカー部分をタップで削除／全デバイス自動同期）
+                  💡 文字を選択して上の 🖍️ 色ボタンを押すとマーカーを引けます（マーカー部分をタップで削除／全デバイスリアルタイム同期）
                 </div>
                 <h2 style={{ fontSize: '1.35em', lineHeight: '1.4', marginTop: 0, paddingBottom: '12px', borderBottom: `1px solid ${themeStyles.border}` }}>
                   {selectedPaper?.title}
