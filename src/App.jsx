@@ -76,12 +76,11 @@ const detectIOS = () => {
 // HTMLエスケープ（別タブ出力時の数式や記号崩れ防止）
 const escapeHtml = (str = "") =>
   str
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/"/g, """)
-    .replace(/'/g, "'");
-
+    .replace(/&/g, "&" + "amp;")
+    .replace(/</g, "&" + "lt;")
+    .replace(/>/g, "&" + "gt;")
+    .replace(/"/g, "&" + "quot;")
+    .replace(/'/g, "&" + "#39;");
 // ★ PDFから読みやすい段落テキストを抽出する関数（リーディングモード用）
 const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
   const response = await fetch(pdfUrl);
