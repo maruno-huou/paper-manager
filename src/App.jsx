@@ -264,8 +264,8 @@ const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontS
   <header class="toolbar">
     <div class="toolbar-title">📖 ${safeTitle}</div>
     <div class="controls">
-      <button onclick="changeSize(-2)">A-</button>
-      <button onclick="changeSize(2)">A+</button>
+     <button onclick="changeSize(-2)" style="font-size:11px;font-weight:bold;min-width:30px;">A</button>
+      <button onclick="changeSize(2)" style="font-size:17px;font-weight:bold;min-width:30px;">A</button>
       <button onclick="setTheme('light')">☀️</button>
       <button onclick="setTheme('sepia')">📜</button>
       <button onclick="setTheme('dark')">🌙</button>
@@ -1667,19 +1667,19 @@ function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
             {isReadingMode && (
               <>
-                <button
+               <button
                   onClick={() => setReadingFontSize(s => Math.max(12, s - 2))}
-                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
+                  style={{ height: '26px', minWidth: '28px', padding: '0 6px', fontSize: '11px', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
                   title="文字を小さく"
                 >
-                  A-
+                  A
                 </button>
                 <button
                   onClick={() => setReadingFontSize(s => Math.min(26, s + 2))}
-                  style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', cursor: 'pointer' }}
+                  style={{ height: '26px', minWidth: '28px', padding: '0 6px', fontSize: '16px', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
                   title="文字を大きく"
                 >
-                  A+
+                  A
                 </button>
                 <button
                   onClick={() => setReadingTheme(t => (t === 'light' ? 'sepia' : t === 'sepia' ? 'dark' : 'light'))}
