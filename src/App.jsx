@@ -1300,7 +1300,7 @@ ${extractedText}`;
                 <div style={{ fontFamily: 'sans-serif', fontSize: '11px', color: themeStyles.sub, marginBottom: '12px' }}>
                   💡 文字を選択して上の 🖍️ 色ボタンを押すとマーカーを引けます（マーカー部分をタップで削除／全デバイスリアルタイム同期）
                 </div>
-                <h2 style={{ fontSize: '1.35em', lineHeight: '1.4', marginTop: 0, paddingBottom: '12px', borderBottom: `1px solid ${themeStyles.border}` }}>
+                <h2 style={{ fontSize: '1.35em', lineHeight: '1.4', marginTop: 0, paddingBottom: '12px',color: themeStyles.text, borderBottom: `1px solid ${themeStyles.border}` }}>
                   {selectedPaper?.title}
                 </h2>
                 {readingPages?.map((p) => (
