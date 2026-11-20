@@ -16,7 +16,7 @@ const DEMO_PAPERS = [
     title: "Minimum Wages and Employment: A Case Study of the Fast-Food Industry (Card & Krueger, 1994)",
     folder: "Labor Economics/Minimum Wage",
     abstract: "Research Question: Does an increase in the minimum wage reduce employment in low-wage industries?\nData Used: Survey data from 410 fast-food restaurants in New Jersey and eastern Pennsylvania before and after NJ's 1992 minimum wage increase.\nMethodology: Difference-in-Differences (DID).\nConclusion: Found no indication that the rise in the minimum wage reduced employment.",
-    memo: "<span style=\"color:#1a73e8\">## 識別戦略メモ</span><br>- **処置群**：ニュージャージー州（最低賃金 $4.25 → $5.05）<br>- **対照群**：隣接するペンシルベニア州東部（$4.25のまま）<br>$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
+    memo: "<span style=\"color:#1a73e8\">## 識別戦略メモ</span><br>- $\\Delta E_i$：店舗 $i$ の雇用変化<br>- $\\text{NJ}_i$：ニュージャージー州ダミー（処置群）<br>$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
   },
   {
     id: "demo-2",
@@ -95,6 +95,19 @@ const decodeEntities = (str = "") =>
     .replace(/'/g, "'")
     .replace(/ /g, " ");
 
+// 数式内の全角記号を半角に補正するヘルパー
+const normalizeTeX = (expr = "") =>
+  expr
+    .replace(/@@COL\d+@@/g, "")
+    .replace(/＿/g, "_")
+    .replace(/＾/g, "^")
+    .replace(/｛/g, "{")
+    .replace(/｝/g, "}")
+    .replace(/＝/g, "=")
+    .replace(/＋/g, "+")
+    .replace(/－/g, "-")
+    .trim();
+
 // 既存のプレーンテキストや旧 [orange] タグをリッチテキスト用HTMLに変換
 const memoToHtml = (raw = "") => {
   if (!raw) return "";
@@ -109,7 +122,7 @@ const memoToHtml = (raw = "") => {
   return html.replace(/\n/g, "<br>");
 };
 
-// ★ Markdown ＋ TeX数式（$$...$$ / $...$）＋ 文字色 をまとめてきれいにHTML変換する共通エンジン
+// ★ Markdown ＋ TeX数式（同じ行インライン対応）＋ 文字色 をきれいに変換する共通エンジン
 const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {}) => {
   if (!rawInput) return "";
 
@@ -117,9 +130,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   const colorTokens = [];
 
   if (preserveColors) {
-    // リッチテキストHTMLから改行と色タグだけを安全に抽出
     let html = memoToHtml(rawInput);
-    // ブロック要素を改行に正規化（余計な空行が増えないように調整）
     html = html
       .replace(/<div[^>]*><br\s*\/?><\/div>/gi, "\n")
       .replace(/<p[^>]*><br\s*\/?><\/p>/gi, "\n")
@@ -128,7 +139,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       .replace(/<\/(div|p)>/gi, "")
       .replace(/<br\s*\/?>/gi, "\n");
 
-    // 色タグ（<span style="color:..."> / <font color="...">）をトークンに退避
     html = html.replace(/<span\b[^>]*style=["'][^"']*color\s*:\s*([^;"']+)[^"']*["'][^>]*>/gi, (_, col) => {
       const idx = colorTokens.length;
       colorTokens.push(`<span style="color:${col.trim()}">`);
@@ -145,7 +155,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       return `@@COL${idx}@@`;
     });
 
-    // その他の不要なHTMLタグを除去してエンティティを元に戻す
     html = html.replace(/<[^>]+>/g, "");
     working = decodeEntities(html).replace(/^\n+/, "");
   }
@@ -156,27 +165,33 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     const idx = codeBlockTokens.length;
     const cleanCode = code.replace(/@@COL\d+@@/g, "");
     codeBlockTokens.push(
-      `<pre style="background:#f3f4f6;color:#1f2328;padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0;font-family:monospace;line-height:1.45;"><code>${escapeHtml(cleanCode.trimEnd())}</code></pre>`
+      `<pre style="background:#f3f4f6;color:#1f2328;padding:6px 8px;border-radius:5px;overflow-x:auto;font-size:12px;margin:4px 0;font-family:monospace;line-height:1.4;"><code>${escapeHtml(cleanCode.trimEnd())}</code></pre>`
     );
     return `@@CODEBLK${idx}@@`;
   });
 
-  // 2. ブロック数式（$$...$$）を退避（数式内に混ざった色トークンを除去してKaTeXエラーを防止）
   const mathTokens = [];
-  working = working.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
+
+  // 2a. 行全体が $$...$$ だけの箇所 → 独立したブロック数式（左揃え・余白最小）
+  working = working.replace(/(^|\n)((?:@@COL\d+@@)*)[ \t]*\$\$([\s\S]+?)\$\$[ \t]*((?:@@COL\d+@@)*)(?=\n|$)/g, (_, lead, preCol, expr, postCol) => {
     const idx = mathTokens.length;
-    const cleanExpr = expr.replace(/@@COL\d+@@/g, "").trim();
-    const rendered = katex.renderToString(cleanExpr, { displayMode: true, throwOnError: false });
-    mathTokens.push(
-      `<div style="overflow-x:auto;margin:4px 0;text-align:left;">${rendered}</div>`
-    );
+    const rendered = katex.renderToString(normalizeTeX(expr), { displayMode: true, throwOnError: false });
+    mathTokens.push(`<div style="overflow-x:auto;margin:2px 0;text-align:left;">${preCol}${rendered}${postCol}</div>`);
+    return `${lead}@@MATHBLK${idx}@@`;
+  });
+
+  // 2b. 文章と同じ行に書かれた $$...$$ → 改行せず同じ行（インライン）で表示
+  working = working.replace(/\$\$([^$\n]+?)\$\$/g, (_, expr) => {
+    const idx = mathTokens.length;
+    const rendered = katex.renderToString(normalizeTeX(expr), { displayMode: false, throwOnError: false });
+    mathTokens.push(rendered);
     return `@@MATH${idx}@@`;
   });
 
-  // 3. インライン数式（$...$）を退避
-  working = working.replace(/\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (full, expr) => {
-    const cleanExpr = expr.replace(/@@COL\d+@@/g, "").trim();
-    if (/^\d+(\.\d+)?[\s→,-]/.test(cleanExpr)) return full;
+  // 3. インライン数式（$...$：前後にスペースがあっても認識）
+  working = working.replace(/\$([^$\n]+?)\$/g, (full, expr) => {
+    const cleanExpr = normalizeTeX(expr);
+    if (!cleanExpr || /^\d+(\.\d+)?[\s→,-]/.test(cleanExpr)) return full;
     const idx = mathTokens.length;
     const rendered = katex.renderToString(cleanExpr, { displayMode: false, throwOnError: false });
     mathTokens.push(rendered);
@@ -197,13 +212,11 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   // 5. HTMLエスケープ後にMarkdown記法を適用
   let safe = escapeHtml(working);
 
-  // インライン装飾（太字・斜体・打ち消し線）
   safe = safe
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/~~(.+?)~~/g, "<del>$1</del>")
     .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
 
-  // 行単位でブロック要素（見出し・箇条書き・番号リスト・引用・水平線）を変換
   const lines = safe.split("\n");
   const out = [];
   let inUl = false;
@@ -217,69 +230,64 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   for (const rawLine of lines) {
     const trimmed = rawLine.trim();
 
-    if (/^@@(CODEBLK|MATH)\d+@@$/.test(trimmed)) {
+    if (/^@@(CODEBLK|MATHBLK)\d+@@$/.test(trimmed)) {
       closeLists();
       out.push(trimmed);
       continue;
     }
 
-    // 見出し（先頭に色トークンが付いていてもマッチするように対応）
     const hMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*(#{1,3})\s+(.+)$/);
     if (hMatch) {
       closeLists();
       const level = hMatch[2].length;
-      const size = level === 1 ? "1.25em" : level === 2 ? "1.12em" : "1.03em";
-      const border = level === 1 ? "border-bottom:1px solid #e5e7eb;padding-bottom:2px;" : "";
-      out.push(`<div style="font-size:${size};font-weight:bold;margin:6px 0 3px;line-height:1.35;${border}">${hMatch[1]}${hMatch[3]}</div>`);
+      const size = level === 1 ? "1.18em" : level === 2 ? "1.08em" : "1.02em";
+      const border = level === 1 ? "border-bottom:1px solid #e5e7eb;padding-bottom:1px;" : "";
+      out.push(`<div style="font-size:${size};font-weight:bold;margin:4px 0 2px;line-height:1.3;${border}">${hMatch[1]}${hMatch[3]}</div>`);
       continue;
     }
 
-    // 水平線
     if (/^---+$/.test(trimmed)) {
       closeLists();
-      out.push(`<hr style="border:none;border-top:1px solid #e5e7eb;margin:6px 0;" />`);
+      out.push(`<hr style="border:none;border-top:1px solid #e5e7eb;margin:4px 0;" />`);
       continue;
     }
 
-    // 引用（> ）
     const bqMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*>\s?(.*)$/);
     if (bqMatch) {
       closeLists();
-      out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:8px;margin:3px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
+      out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:7px;margin:2px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
       continue;
     }
 
-    // 箇条書き（- または * ）
     const ulMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*[-*]\s+(.+)$/);
     if (ulMatch) {
       if (inOl) { out.push("</ol>"); inOl = false; }
-      if (!inUl) { out.push(`<ul style="margin:3px 0;padding-left:18px;">`); inUl = true; }
-      out.push(`<li style="margin:1px 0;">${ulMatch[1]}${ulMatch[2]}</li>`);
+      if (!inUl) { out.push(`<ul style="margin:2px 0;padding-left:18px;">`); inUl = true; }
+      out.push(`<li style="margin:0;">${ulMatch[1]}${ulMatch[2]}</li>`);
       continue;
     }
 
-    // 番号付きリスト（1. ）
     const olMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*\d+\.\s+(.+)$/);
     if (olMatch) {
       if (inUl) { out.push("</ul>"); inUl = false; }
-      if (!inOl) { out.push(`<ol style="margin:3px 0;padding-left:20px;">`); inOl = true; }
-      out.push(`<li style="margin:1px 0;">${olMatch[1]}${olMatch[2]}</li>`);
+      if (!inOl) { out.push(`<ol style="margin:2px 0;padding-left:20px;">`); inOl = true; }
+      out.push(`<li style="margin:0;">${olMatch[1]}${olMatch[2]}</li>`);
       continue;
     }
 
     closeLists();
     if (trimmed === "") {
-      out.push(`<div style="height:6px;"></div>`);
+      out.push(`<div style="height:4px;"></div>`);
     } else {
-      out.push(`<div style="margin:1px 0;">${rawLine}</div>`);
+      out.push(`<div style="margin:0;">${rawLine}</div>`);
     }
   }
   closeLists();
 
   let result = out.join("");
 
-  // 6. 退避したトークンを復元
   result = result.replace(/@@INCODE(\d+)@@/g, (_, i) => inlineCodeTokens[Number(i)] || "");
+  result = result.replace(/@@MATHBLK(\d+)@@/g, (_, i) => mathTokens[Number(i)] || "");
   result = result.replace(/@@MATH(\d+)@@/g, (_, i) => mathTokens[Number(i)] || "");
   result = result.replace(/@@CODEBLK(\d+)@@/g, (_, i) => codeBlockTokens[Number(i)] || "");
   result = result.replace(/@@COL(\d+)@@/g, (_, i) => colorTokens[Number(i)] || "");
@@ -536,7 +544,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // メモ状態（リッチテキスト直接編集 ＋ Markdown/数式プレビュー切替）
+  // メモ状態
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
   const [isMemoPreview, setIsMemoPreview] = useState(false);
@@ -699,15 +707,30 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  const handleInsertMath = () => {
+  // ★ $ / $$ を挿入し、選択がなければカーソルを真ん中に置く
+  const handleInsertMath = (delim = "$") => {
     if (isMemoPreview) setIsMemoPreview(false);
     const editor = memoEditorRef.current;
     if (!editor) return;
     editor.focus();
     const sel = window.getSelection();
     const selectedText = sel ? sel.toString() : "";
-    const snippet = selectedText ? `$$${selectedText}$$` : `$$  $$`;
-    document.execCommand("insertText", false, snippet);
+    if (selectedText) {
+      document.execCommand("insertText", false, `${delim}${selectedText}${delim}`);
+    } else {
+      document.execCommand("insertText", false, `${delim}${delim}`);
+      // カーソルを記号の真ん中へ戻す
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        if (range.startContainer.nodeType === 3 && range.startOffset >= delim.length) {
+          const newPos = range.startOffset - delim.length;
+          range.setStart(range.startContainer, newPos);
+          range.setEnd(range.startContainer, newPos);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+    }
     setMemoText(editor.innerHTML);
   };
 
@@ -1597,7 +1620,7 @@ ${extractedText}`;
     </div>
   );
 
-  // ★ AIチャット部分（Markdown ＋ TeX数式レンダリング対応）
+  // AIチャット部分（Markdown ＋ TeX数式レンダリング対応）
   const aiSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '10px' : '12px 16px', boxSizing: 'border-box', textAlign: 'left' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '6px', gap: '8px' }}>
@@ -1612,12 +1635,12 @@ ${extractedText}`;
         {chat.map((msg, i) => (
           <div key={i} style={{ marginBottom: '10px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
             {msg.role === 'user' ? (
-              <div style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#007bff', color: 'white', maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.5', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
+              <div style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#007bff', color: 'white', maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.45', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
                 {msg.text}
               </div>
             ) : (
               <div
-                style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#f1f3f4', color: '#1f2328', maxWidth: '94%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.55', textAlign: 'left', wordBreak: 'break-word', letterSpacing: 'normal' }}
+                style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#f1f3f4', color: '#1f2328', maxWidth: '94%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.5', textAlign: 'left', wordBreak: 'break-word', letterSpacing: 'normal' }}
                 dangerouslySetInnerHTML={{ __html: renderMarkdownAndMathHtml(msg.text, { preserveColors: false }) }}
               />
             )}
@@ -1642,7 +1665,7 @@ ${extractedText}`;
     </div>
   );
 
-  // ★ 左詰め・コンパクト1行ツールバー ＋ 文字色＆Markdown＆TeX数式対応メモ欄
+  // ★ 左詰め・タイトな行間・同じ行インライン数式対応メモ欄
   const memoSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
@@ -1670,8 +1693,16 @@ ${extractedText}`;
           <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
           <button
             onMouseDown={(e) => e.preventDefault()}
-            onClick={handleInsertMath}
-            title="TeX数式（$$...$$）を挿入"
+            onClick={() => handleInsertMath("$")}
+            title="同じ行に変数・数式を挿入（$...$）"
+            style={{ height: '22px', padding: '0 6px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            $
+          </button>
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleInsertMath("$$")}
+            title="数式（$$...$$）を挿入"
             style={{ height: '22px', padding: '0 5px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
           >
             $$
@@ -1717,10 +1748,10 @@ ${extractedText}`;
             minHeight: 0,
             overflowY: 'auto',
             WebkitOverflowScrolling: 'touch',
-            padding: '10px 12px',
-            fontSize: isMobile ? '15px' : '13.5px',
-            lineHeight: '1.55',
-            letterSpacing: 'normal',
+            padding: '8px 10px',
+            fontSize: isMobile ? '14.5px' : '13px',
+            lineHeight: '1.4',
+            letterSpacing: '0',
             textAlign: 'left',
             border: '1px solid #007bff',
             borderRadius: '6px',
@@ -1753,10 +1784,10 @@ ${extractedText}`;
             minHeight: 0,
             overflowY: 'auto',
             WebkitOverflowScrolling: 'touch',
-            padding: '10px 12px',
-            fontSize: isMobile ? '16px' : '13.5px',
-            lineHeight: '1.55',
-            letterSpacing: 'normal',
+            padding: '8px 10px',
+            fontSize: isMobile ? '16px' : '13px',
+            lineHeight: '1.4',
+            letterSpacing: '0',
             textAlign: 'left',
             border: '1px solid #ccc',
             borderRadius: '6px',
@@ -1784,6 +1815,9 @@ ${extractedText}`;
       onTouchEnd={handlePointerUp}
       style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100dvh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#333', backgroundColor: '#fff', textAlign: 'left', userSelect: isAnyDragging ? 'none' : 'auto', cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto', overflow: 'hidden' }}
     >
+      {/* KaTeXのディスプレイ数式を左揃え＆余白スリムに固定 */}
+      <style>{`.katex-display { margin: 2px 0 !important; text-align: left !important; } .katex { font-size: 1.05em; }`}</style>
+
       {isMobile && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #ddd', flexShrink: 0, gap: '8px' }}>
           <button onClick={() => setIsMobileMenuOpen(true)} style={{ background: '#fff', border: '1px solid #ccc', borderRadius: '6px', padding: '6px 10px', fontSize: '15px', cursor: 'pointer', color: '#333', flexShrink: 0 }}>
