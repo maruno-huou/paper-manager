@@ -16,21 +16,21 @@ const DEMO_PAPERS = [
     title: "Minimum Wages and Employment: A Case Study of the Fast-Food Industry (Card & Krueger, 1994)",
     folder: "Labor Economics/Minimum Wage",
     abstract: "Research Question: Does an increase in the minimum wage reduce employment in low-wage industries?\nData Used: Survey data from 410 fast-food restaurants in New Jersey and eastern Pennsylvania before and after NJ's 1992 minimum wage increase.\nMethodology: Difference-in-Differences (DID).\nConclusion: Found no indication that the rise in the minimum wage reduced employment.",
-    memo: "<span style=\"color:#1a73e8\">【識別戦略メモ】</span><br>・処置群：ニュージャージー州（最低賃金 $4.25 → $5.05）<br>・対照群：隣接するペンシルベニア州東部（$4.25のまま）<br>$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
+    memo: "<span style=\"color:#1a73e8\">## 識別戦略メモ</span><br>- **処置群**：ニュージャージー州（最低賃金 $4.25 → $5.05）<br>- **対照群**：隣接するペンシルベニア州東部（$4.25のまま）<br>$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
   },
   {
     id: "demo-2",
     title: "Children and Gender Inequality: Evidence from Denmark (Kleven et al., 2019)",
     folder: "Labor Economics/Gender",
     abstract: "Research Question: How much of the remaining gender inequality in earnings can be explained by the arrival of children?\nData Used: Danish administrative data covering the full population from 1980 to 2013.\nMethodology: Event Study around the birth of the first child.\nConclusion: The arrival of children creates a long-run gender gap in earnings of about 20%, driven by labor force participation, hours worked, and wage rates.",
-    memo: "【チャイルド・ペナルティ整理】\n・第一子出産をイベントとしたイベントスタディ。\n・出産前は男女で平行トレンドだが、出産直後に女性のみ所得が急落し回復しない。"
+    memo: "## チャイルド・ペナルティ整理\n- 第一子出産をイベントとしたイベントスタディ。\n- 出産前は男女で平行トレンドだが、出産直後に女性のみ所得が急落し回復しない。"
   },
   {
     id: "demo-3",
     title: "The Colonial Origins of Comparative Development (Acemoglu, Johnson, & Robinson, 2001)",
     folder: "Development & Institutions",
     abstract: "Research Question: What is the fundamental cause of large differences in income per capita across countries?\nData Used: Cross-country data on settler mortality, institutional quality (expropriation risk), and GDP per capita.\nMethodology: Instrumental Variables (2SLS) using European settler mortality as an instrument for current institutions.\nConclusion: Differences in institutions account for roughly three-quarters of the income per capita differences across former colonies.",
-    memo: "【操作変数（IV）の妥当性】\n・除外制約：過去の入植者死亡率は「当時の制度形成」を通じてのみ現代の所得に影響する。"
+    memo: "## 操作変数（IV）の妥当性\n- **除外制約**：過去の入植者死亡率は「当時の制度形成」を通じてのみ現代の所得に影響する。"
   }
 ];
 
@@ -86,12 +86,20 @@ const escapeHtml = (str = "") =>
     .replace(/"/g, "&" + "quot;")
     .replace(/'/g, "&" + "#39;");
 
-// 既存のプレーンテキストや [orange] タグをリッチテキスト用HTMLに変換（後方互換）
+const decodeEntities = (str = "") =>
+  str
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/&/g, "&")
+    .replace(/"/g, '"')
+    .replace(/'/g, "'")
+    .replace(/ /g, " ");
+
+// 既存のプレーンテキストや旧 [orange] タグをリッチテキスト用HTMLに変換
 const memoToHtml = (raw = "") => {
   if (!raw) return "";
   if (/<(div|br|span|font|p)\b/i.test(raw)) return raw;
   let html = escapeHtml(raw);
-  // 旧 [color]...[/color] タグを変換（入れ子にも対応するため複数回適用）
   for (let i = 0; i < 4; i++) {
     html = html.replace(
       /\[(black|orange|blue|green)\]([\s\S]*?)\[\/\1\]/g,
@@ -101,91 +109,182 @@ const memoToHtml = (raw = "") => {
   return html.replace(/\n/g, "<br>");
 };
 
-// リッチテキストHTMLの色・改行を保ったまま、中の $$...$$ / $...$ をKaTeX変換するヘルパー
-const renderHtmlWithMath = (raw = "") => {
-  if (!raw) return "";
-  const container = document.createElement("div");
-  container.innerHTML = memoToHtml(raw);
+// ★ Markdown ＋ TeX数式（$$...$$ / $...$）＋ 文字色 をまとめてきれいにHTML変換する共通エンジン
+const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {}) => {
+  if (!rawInput) return "";
 
-  const walk = (node) => {
-    if (node.nodeType === 3) {
-      const text = node.nodeValue;
-      if (!text || !text.includes("$")) return;
-      const escaped = escapeHtml(text);
-      let replaced = escaped.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
-        const unescaped = expr
-          .replace(/</g, "<")
-          .replace(/>/g, ">")
-          .replace(/&/g, "&");
-        const rendered = katex.renderToString(unescaped.trim(), { displayMode: true, throwOnError: false });
-        return `<div style="overflow-x:auto;margin:6px 0;">${rendered}</div>`;
-      });
-      replaced = replaced.replace(/\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (full, expr) => {
-        if (/^\d+(\.\d+)?[\s→,-]/.test(expr)) return full;
-        const unescaped = expr
-          .replace(/</g, "<")
-          .replace(/>/g, ">")
-          .replace(/&/g, "&");
-        return katex.renderToString(unescaped.trim(), { displayMode: false, throwOnError: false });
-      });
-      if (replaced !== escaped) {
-        const span = document.createElement("span");
-        span.innerHTML = replaced;
-        node.parentNode.replaceChild(span, node);
-      }
-    } else if (node.nodeType === 1 && !node.classList?.contains("katex")) {
-      Array.from(node.childNodes).forEach(walk);
-    }
-  };
+  let working = rawInput;
+  const colorTokens = [];
 
-  walk(container);
-  return container.innerHTML;
-};
+  if (preserveColors) {
+    // リッチテキストHTMLから改行と色タグだけを安全に抽出
+    let html = memoToHtml(rawInput);
+    // ブロック要素を改行に正規化（余計な空行が増えないように調整）
+    html = html
+      .replace(/<div[^>]*><br\s*\/?><\/div>/gi, "\n")
+      .replace(/<p[^>]*><br\s*\/?><\/p>/gi, "\n")
+      .replace(/<\/(div|p)>\s*<(div|p)[^>]*>/gi, "\n")
+      .replace(/<(div|p)[^>]*>/gi, "\n")
+      .replace(/<\/(div|p)>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n");
 
-// AIチャット用：TeX数式（$$...$$ / $...$）をKaTeXで描画するヘルパー
-const renderMathSegments = (text, keyPrefix = "") => {
-  if (!text) return null;
-  const parts = [];
-  const blockRegex = /\$\$([\s\S]+?)\$\$/g;
-  let lastIdx = 0;
-  let match;
-  let count = 0;
+    // 色タグ（<span style="color:..."> / <font color="...">）をトークンに退避
+    html = html.replace(/<span\b[^>]*style=["'][^"']*color\s*:\s*([^;"']+)[^"']*["'][^>]*>/gi, (_, col) => {
+      const idx = colorTokens.length;
+      colorTokens.push(`<span style="color:${col.trim()}">`);
+      return `@@COL${idx}@@`;
+    });
+    html = html.replace(/<font\b[^>]*color=["']?([^"'\s>]+)["']?[^>]*>/gi, (_, col) => {
+      const idx = colorTokens.length;
+      colorTokens.push(`<span style="color:${col.trim()}">`);
+      return `@@COL${idx}@@`;
+    });
+    html = html.replace(/<\/(span|font)>/gi, () => {
+      const idx = colorTokens.length;
+      colorTokens.push(`</span>`);
+      return `@@COL${idx}@@`;
+    });
 
-  const pushInlineMath = (plainStr) => {
-    if (!plainStr) return;
-    const inlineRegex = /\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g;
-    let inLast = 0;
-    let inMatch;
-    while ((inMatch = inlineRegex.exec(plainStr)) !== null) {
-      const expr = inMatch[1];
-      if (/^\d+(\.\d+)?[\s→,-]/.test(expr)) continue;
-      if (inMatch.index > inLast) {
-        parts.push(<span key={`${keyPrefix}-t-${count++}`}>{plainStr.slice(inLast, inMatch.index)}</span>);
-      }
-      const html = katex.renderToString(expr.trim(), { displayMode: false, throwOnError: false });
-      parts.push(<span key={`${keyPrefix}-im-${count++}`} dangerouslySetInnerHTML={{ __html: html }} />);
-      inLast = inMatch.index + inMatch[0].length;
-    }
-    if (inLast < plainStr.length) {
-      parts.push(<span key={`${keyPrefix}-t-${count++}`}>{plainStr.slice(inLast)}</span>);
-    }
-  };
-
-  while ((match = blockRegex.exec(text)) !== null) {
-    if (match.index > lastIdx) pushInlineMath(text.slice(lastIdx, match.index));
-    const html = katex.renderToString(match[1].trim(), { displayMode: true, throwOnError: false });
-    parts.push(
-      <div
-        key={`${keyPrefix}-bm-${count++}`}
-        style={{ overflowX: 'auto', margin: '8px 0', padding: '4px 0' }}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
-    lastIdx = match.index + match[0].length;
+    // その他の不要なHTMLタグを除去してエンティティを元に戻す
+    html = html.replace(/<[^>]+>/g, "");
+    working = decodeEntities(html).replace(/^\n+/, "");
   }
 
-  if (lastIdx < text.length) pushInlineMath(text.slice(lastIdx));
-  return parts;
+  // 1. コードブロック（```...```）を退避
+  const codeBlockTokens = [];
+  working = working.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, code) => {
+    const idx = codeBlockTokens.length;
+    const cleanCode = code.replace(/@@COL\d+@@/g, "");
+    codeBlockTokens.push(
+      `<pre style="background:#f3f4f6;color:#1f2328;padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0;font-family:monospace;line-height:1.45;"><code>${escapeHtml(cleanCode.trimEnd())}</code></pre>`
+    );
+    return `@@CODEBLK${idx}@@`;
+  });
+
+  // 2. ブロック数式（$$...$$）を退避（数式内に混ざった色トークンを除去してKaTeXエラーを防止）
+  const mathTokens = [];
+  working = working.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
+    const idx = mathTokens.length;
+    const cleanExpr = expr.replace(/@@COL\d+@@/g, "").trim();
+    const rendered = katex.renderToString(cleanExpr, { displayMode: true, throwOnError: false });
+    mathTokens.push(
+      `<div style="overflow-x:auto;margin:4px 0;text-align:left;">${rendered}</div>`
+    );
+    return `@@MATH${idx}@@`;
+  });
+
+  // 3. インライン数式（$...$）を退避
+  working = working.replace(/\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (full, expr) => {
+    const cleanExpr = expr.replace(/@@COL\d+@@/g, "").trim();
+    if (/^\d+(\.\d+)?[\s→,-]/.test(cleanExpr)) return full;
+    const idx = mathTokens.length;
+    const rendered = katex.renderToString(cleanExpr, { displayMode: false, throwOnError: false });
+    mathTokens.push(rendered);
+    return `@@MATH${idx}@@`;
+  });
+
+  // 4. インラインコード（`...`）を退避
+  const inlineCodeTokens = [];
+  working = working.replace(/`([^`\n]+)`/g, (_, code) => {
+    const idx = inlineCodeTokens.length;
+    const cleanCode = code.replace(/@@COL\d+@@/g, "");
+    inlineCodeTokens.push(
+      `<code style="background:#eef0f3;color:#c7254e;padding:1px 4px;border-radius:3px;font-size:0.92em;font-family:monospace;">${escapeHtml(cleanCode)}</code>`
+    );
+    return `@@INCODE${idx}@@`;
+  });
+
+  // 5. HTMLエスケープ後にMarkdown記法を適用
+  let safe = escapeHtml(working);
+
+  // インライン装飾（太字・斜体・打ち消し線）
+  safe = safe
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/~~(.+?)~~/g, "<del>$1</del>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+
+  // 行単位でブロック要素（見出し・箇条書き・番号リスト・引用・水平線）を変換
+  const lines = safe.split("\n");
+  const out = [];
+  let inUl = false;
+  let inOl = false;
+
+  const closeLists = () => {
+    if (inUl) { out.push("</ul>"); inUl = false; }
+    if (inOl) { out.push("</ol>"); inOl = false; }
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+
+    if (/^@@(CODEBLK|MATH)\d+@@$/.test(trimmed)) {
+      closeLists();
+      out.push(trimmed);
+      continue;
+    }
+
+    // 見出し（先頭に色トークンが付いていてもマッチするように対応）
+    const hMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*(#{1,3})\s+(.+)$/);
+    if (hMatch) {
+      closeLists();
+      const level = hMatch[2].length;
+      const size = level === 1 ? "1.25em" : level === 2 ? "1.12em" : "1.03em";
+      const border = level === 1 ? "border-bottom:1px solid #e5e7eb;padding-bottom:2px;" : "";
+      out.push(`<div style="font-size:${size};font-weight:bold;margin:6px 0 3px;line-height:1.35;${border}">${hMatch[1]}${hMatch[3]}</div>`);
+      continue;
+    }
+
+    // 水平線
+    if (/^---+$/.test(trimmed)) {
+      closeLists();
+      out.push(`<hr style="border:none;border-top:1px solid #e5e7eb;margin:6px 0;" />`);
+      continue;
+    }
+
+    // 引用（> ）
+    const bqMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*>\s?(.*)$/);
+    if (bqMatch) {
+      closeLists();
+      out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:8px;margin:3px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
+      continue;
+    }
+
+    // 箇条書き（- または * ）
+    const ulMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*[-*]\s+(.+)$/);
+    if (ulMatch) {
+      if (inOl) { out.push("</ol>"); inOl = false; }
+      if (!inUl) { out.push(`<ul style="margin:3px 0;padding-left:18px;">`); inUl = true; }
+      out.push(`<li style="margin:1px 0;">${ulMatch[1]}${ulMatch[2]}</li>`);
+      continue;
+    }
+
+    // 番号付きリスト（1. ）
+    const olMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*\d+\.\s+(.+)$/);
+    if (olMatch) {
+      if (inUl) { out.push("</ul>"); inUl = false; }
+      if (!inOl) { out.push(`<ol style="margin:3px 0;padding-left:20px;">`); inOl = true; }
+      out.push(`<li style="margin:1px 0;">${olMatch[1]}${olMatch[2]}</li>`);
+      continue;
+    }
+
+    closeLists();
+    if (trimmed === "") {
+      out.push(`<div style="height:6px;"></div>`);
+    } else {
+      out.push(`<div style="margin:1px 0;">${rawLine}</div>`);
+    }
+  }
+  closeLists();
+
+  let result = out.join("");
+
+  // 6. 退避したトークンを復元
+  result = result.replace(/@@INCODE(\d+)@@/g, (_, i) => inlineCodeTokens[Number(i)] || "");
+  result = result.replace(/@@MATH(\d+)@@/g, (_, i) => mathTokens[Number(i)] || "");
+  result = result.replace(/@@CODEBLK(\d+)@@/g, (_, i) => codeBlockTokens[Number(i)] || "");
+  result = result.replace(/@@COL(\d+)@@/g, (_, i) => colorTokens[Number(i)] || "");
+
+  return result;
 };
 
 // テキストをハイライト位置で分割する共通ヘルパー
@@ -281,7 +380,7 @@ const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontS
   body[data-theme="sepia"] { --bg:#f6efe2; --text:#3b2f23; --sub:#7a6855; --bar:rgba(239,229,211,.95); --bd:#dfd1b8; --btn:#fbf6ec; }
   body[data-theme="dark"] { --bg:#16181c; --text:#e6e8eb; --sub:#9aa0a6; --bar:rgba(28,31,38,.95); --bd:#2f343d; --btn:#242830; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family:Georgia,"Hiragino Mincho ProN","Yu Mincho",serif; transition:background .2s,color .2s; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Georgia,"Hiragino Mincho ProN","Yu Mincho",serif; transition:background .2s,color .2s; text-align:left; }
   .toolbar { position:sticky; top:0; z-index:100; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 16px; padding-top:max(10px,env(safe-area-inset-top)); background:var(--bar); backdrop-filter:blur(8px); border-bottom:1px solid var(--bd); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   .toolbar-title { font-size:13px; font-weight:700; max-width:48vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .controls { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
@@ -437,7 +536,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // ★ メモ状態（リッチテキスト直接編集 ＋ 数式プレビュー切替）
+  // メモ状態（リッチテキスト直接編集 ＋ Markdown/数式プレビュー切替）
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
   const [isMemoPreview, setIsMemoPreview] = useState(false);
@@ -486,7 +585,6 @@ function App() {
   const isSidebarOpen = sidebarWidth > 0;
   const selectedPaperId = selectedPaper?.id || null;
 
-  // エディタへHTMLを安全に同期（論文切替時・プレビュー解除時・タブ切替時）
   useEffect(() => {
     if (!isMemoPreview && memoEditorRef.current) {
       const targetHtml = memoToHtml(memoText);
@@ -512,7 +610,7 @@ function App() {
     setReadingProgress("");
   }, [currentPdfUrl]);
 
-  // リアルタイム同期（onSnapshot）：チャット・メモ・マーカーを別デバイスと即時同期
+  // リアルタイム同期（onSnapshot）
   useEffect(() => {
     if (!isPersonalMode || !selectedPaperId) return;
 
@@ -552,7 +650,6 @@ function App() {
     return () => unsub();
   }, [isPersonalMode, selectedPaperId, isMemoPreview]);
 
-  // iOSでもボタン押下前に選択テキストを保持するリスナー
   useEffect(() => {
     if (!isReadingMode) return;
     const handleSelectionChange = () => {
@@ -575,7 +672,6 @@ function App() {
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
   }, [isReadingMode]);
 
-  // 設定の自動保存
   useEffect(() => saveStorage("pm_aiLanguage", aiLanguage), [aiLanguage]);
   useEffect(() => saveStorage("pm_sidebarWidth", sidebarWidth), [sidebarWidth]);
   useEffect(() => saveStorage("pm_leftWidth", leftWidth), [leftWidth]);
@@ -588,7 +684,6 @@ function App() {
   useEffect(() => saveStorage("pm_readingTheme", readingTheme), [readingTheme]);
   useEffect(() => saveStorage("pm_readingFontSize", readingFontSize), [readingFontSize]);
 
-  // ★ メモの文字色を直接適用（カッコを出さずにそのまま色付け）
   const handleApplyMemoColor = (colorCode) => {
     setActiveMemoColor(colorCode);
     if (isMemoPreview) setIsMemoPreview(false);
@@ -604,7 +699,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // ★ メモのカーソル位置に $$ 数式 $$ を挿入
   const handleInsertMath = () => {
     if (isMemoPreview) setIsMemoPreview(false);
     const editor = memoEditorRef.current;
@@ -617,7 +711,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // マーカーの保存・同期
   const syncHighlights = async (paperId, nextHighlights) => {
     setHighlights(nextHighlights);
     if (!paperId) return;
@@ -626,9 +719,7 @@ function App() {
     if (isPersonalMode) {
       try {
         await updateDoc(doc(db, "papers", paperId), { highlights: nextHighlights });
-      } catch (e) {
-        console.error("Failed to sync highlights:", e);
-      }
+      } catch (e) { console.error("Failed to sync highlights:", e); }
     }
   };
 
@@ -645,12 +736,10 @@ function App() {
       }
     }
     if (!target) target = lastSelectionRef.current;
-
     if (!target || !target.text) {
       alert("先にリーディングモード内の文章をなぞって選択してください。");
       return;
     }
-
     const newHl = { id: `hl-${Date.now()}`, ...target, color: colorCode };
     const nextHighlights = [...highlights, newHl];
     lastSelectionRef.current = null;
@@ -661,8 +750,7 @@ function App() {
   const handleRemoveHighlight = async (hlId) => {
     if (!selectedPaper) return;
     if (!window.confirm("このマーカーを削除しますか？")) return;
-    const nextHighlights = highlights.filter(h => h.id !== hlId);
-    await syncHighlights(selectedPaper.id, nextHighlights);
+    await syncHighlights(selectedPaper.id, highlights.filter(h => h.id !== hlId));
   };
 
   const handleToggleReadingMode = async () => {
@@ -733,9 +821,7 @@ function App() {
     if (isPersonalMode) {
       try {
         await updateDoc(doc(db, "papers", paperId), { chat: newChatArray });
-      } catch (error) {
-        console.error("Failed to sync chat to Firestore:", error);
-      }
+      } catch (error) { console.error("Failed to sync chat to Firestore:", error); }
     }
   };
 
@@ -763,9 +849,7 @@ function App() {
   };
 
   const handlePointerMove = (clientX, clientY) => {
-    if (isDraggingSidebar) {
-      setSidebarWidth(clientX < 80 ? 0 : Math.min(Math.max(clientX, 160), 520));
-    }
+    if (isDraggingSidebar) setSidebarWidth(clientX < 80 ? 0 : Math.min(Math.max(clientX, 160), 520));
     if (isDragging) {
       const leftAreaWidth = isSidebarOpen ? sidebarWidth + 6 : 40;
       const availableWidth = window.innerWidth - leftAreaWidth - 6;
@@ -1060,7 +1144,7 @@ function App() {
     setLoading(true);
     setLoadingMessage("Gemini is summarizing the paper...");
     try {
-      const prompt = `Please summarize the following paper in about 3 sentences. Write the summary entirely in ${aiLanguage}. Use LaTeX wrapped in $$...$$ for block equations and $...$ for inline math if needed.\nTitle: ${paper.title}\nContent: ${paper.abstract}`;
+      const prompt = `Please summarize the following paper in about 3 sentences. Write the summary entirely in ${aiLanguage}. Use clean Markdown formatting (bold, bullets if helpful) and LaTeX wrapped in $$...$$ or $...$ for equations.\nTitle: ${paper.title}\nContent: ${paper.abstract}`;
       const responseText = await generateWithFallback(prompt);
       await updateChatForPaper(paper.id, [{ role: 'ai', text: responseText }]);
     } catch (e) {
@@ -1131,7 +1215,7 @@ function App() {
     try {
       const plainMemo = memoText.replace(/<[^>]+>/g, " ").trim();
       const contextText = selectedPaper.abstract || plainMemo || "No abstract provided.";
-      const prompt = `This is a question regarding the paper "${selectedPaper.title}". Please answer based on the following content. Write your answer entirely in ${aiLanguage}. When writing mathematical formulas, use LaTeX syntax wrapped in $$...$$ for display equations and $...$ for inline variables/equations.\nContent: ${contextText}\n\nQuestion: ${question}`;
+      const prompt = `This is a question regarding the paper "${selectedPaper.title}". Please answer based on the following content. Write your answer entirely in ${aiLanguage}. Use Markdown for clear structure and LaTeX syntax wrapped in $$...$$ for display equations and $...$ for inline variables/equations.\nContent: ${contextText}\n\nQuestion: ${question}`;
       const responseText = await generateWithFallback(prompt, "pro");
       await updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: responseText }]);
     } catch (e) {
@@ -1444,7 +1528,7 @@ ${extractedText}`;
 
       {currentPdfUrl ? (
         isReadingMode ? (
-          <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', backgroundColor: themeStyles.bg, color: themeStyles.text, padding: isMobile ? '18px 16px 60px' : '24px 32px 60px', boxSizing: 'border-box', fontFamily: 'Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif', fontSize: `${readingFontSize}px`, lineHeight: '1.85' }}>
+          <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', backgroundColor: themeStyles.bg, color: themeStyles.text, padding: isMobile ? '18px 16px 60px' : '24px 32px 60px', boxSizing: 'border-box', fontFamily: 'Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif', fontSize: `${readingFontSize}px`, lineHeight: '1.85', textAlign: 'left' }}>
             {readingLoading ? (
               <div style={{ textAlign: 'center', marginTop: '40px', fontFamily: 'sans-serif', fontSize: '14px', color: themeStyles.sub }}>
                 ⏳ {readingProgress || "リーディングモードへ変換中..."}
@@ -1513,9 +1597,9 @@ ${extractedText}`;
     </div>
   );
 
-  // AIチャット部分（TeX数式レンダリング対応）
+  // ★ AIチャット部分（Markdown ＋ TeX数式レンダリング対応）
   const aiSection = (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '10px' : '12px 16px', boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '10px' : '12px 16px', boxSizing: 'border-box', textAlign: 'left' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '6px', gap: '8px' }}>
         <h3 style={{ margin: 0, fontSize: '14px', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           🤖 AI Assistant — {selectedPaper?.title}
@@ -1527,9 +1611,16 @@ ${extractedText}`;
       <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '4px 0' }}>
         {chat.map((msg, i) => (
           <div key={i} style={{ marginBottom: '10px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
-            <div style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f4', color: msg.role === 'user' ? 'white' : 'black', maxWidth: '92%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.6', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
-              {renderMathSegments(msg.text, `m-${i}`)}
-            </div>
+            {msg.role === 'user' ? (
+              <div style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#007bff', color: 'white', maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.5', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
+                {msg.text}
+              </div>
+            ) : (
+              <div
+                style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: '#f1f3f4', color: '#1f2328', maxWidth: '94%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.55', textAlign: 'left', wordBreak: 'break-word', letterSpacing: 'normal' }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdownAndMathHtml(msg.text, { preserveColors: false }) }}
+              />
+            )}
           </div>
         ))}
         {loading && <div style={{ color: '#666', fontSize: '13px', marginTop: '6px' }}>⏳ {loadingMessage}</div>}
@@ -1551,13 +1642,12 @@ ${extractedText}`;
     </div>
   );
 
-  // ★ 超スリム1行ツールバー ＋ カッコ無し直接色付けメモ欄
+  // ★ 左詰め・コンパクト1行ツールバー ＋ 文字色＆Markdown＆TeX数式対応メモ欄
   const memoSection = (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 14px', backgroundColor: '#fafafa', boxSizing: 'border-box' }}>
-      {/* スリム1行バー */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-          <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#333', marginRight: '2px' }}>📝</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
           {MEMO_COLORS.map(c => (
             <button
               key={c.key}
@@ -1565,8 +1655,8 @@ ${extractedText}`;
               onClick={() => handleApplyMemoColor(c.code)}
               title={`文字色：${c.label}`}
               style={{
-                width: '18px',
-                height: '18px',
+                width: '16px',
+                height: '16px',
                 borderRadius: '50%',
                 backgroundColor: c.code,
                 border: activeMemoColor === c.code ? '2px solid #007bff' : '1px solid #bbb',
@@ -1582,16 +1672,16 @@ ${extractedText}`;
             onMouseDown={(e) => e.preventDefault()}
             onClick={handleInsertMath}
             title="TeX数式（$$...$$）を挿入"
-            style={{ height: '22px', padding: '0 6px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
+            style={{ height: '22px', padding: '0 5px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
           >
             $$
           </button>
           <button
             onClick={() => setIsMemoPreview(p => !p)}
-            title={isMemoPreview ? "編集に戻る" : "数式をきれいに表示"}
+            title={isMemoPreview ? "編集に戻る" : "Markdown・数式を表示"}
             style={{
               height: '22px',
-              padding: '0 7px',
+              padding: '0 6px',
               fontSize: '11px',
               border: '1px solid #ccc',
               borderRadius: '4px',
@@ -1601,24 +1691,23 @@ ${extractedText}`;
               cursor: 'pointer'
             }}
           >
-            {isMemoPreview ? "✏️ 編集" : "👁️ 数式"}
+            {isMemoPreview ? "✏️ 編集" : "👁️ 表示"}
           </button>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '12px', textAlign: 'right' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+          <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '10px', textAlign: 'right' }}>
             {memoStatus}
           </span>
           <button
             onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
-            style={{ height: '22px', padding: '0 8px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+            style={{ height: '22px', padding: '0 7px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
           >
             Save
           </button>
         </div>
       </div>
 
-      {/* メモ本体（広々とした1エリア） */}
       {isMemoPreview ? (
         <div
           onClick={() => setIsMemoPreview(false)}
@@ -1630,7 +1719,9 @@ ${extractedText}`;
             WebkitOverflowScrolling: 'touch',
             padding: '10px 12px',
             fontSize: isMobile ? '15px' : '13.5px',
-            lineHeight: '1.7',
+            lineHeight: '1.55',
+            letterSpacing: 'normal',
+            textAlign: 'left',
             border: '1px solid #007bff',
             borderRadius: '6px',
             backgroundColor: '#fff',
@@ -1642,7 +1733,7 @@ ${extractedText}`;
           }}
           dangerouslySetInnerHTML={{
             __html: memoText
-              ? renderHtmlWithMath(memoText)
+              ? renderMarkdownAndMathHtml(memoText, { preserveColors: true })
               : '<span style="color:#999;font-size:12px;">（メモはまだありません）</span>'
           }}
         />
@@ -1664,7 +1755,9 @@ ${extractedText}`;
             WebkitOverflowScrolling: 'touch',
             padding: '10px 12px',
             fontSize: isMobile ? '16px' : '13.5px',
-            lineHeight: '1.65',
+            lineHeight: '1.55',
+            letterSpacing: 'normal',
+            textAlign: 'left',
             border: '1px solid #ccc',
             borderRadius: '6px',
             backgroundColor: '#fff',
@@ -1689,7 +1782,7 @@ ${extractedText}`;
       onMouseLeave={handlePointerUp}
       onTouchMove={(e) => { if ((isDraggingSidebar || isDragging || isDraggingVertical) && e.touches.length > 0) handlePointerMove(e.touches[0].clientX, e.touches[0].clientY); }}
       onTouchEnd={handlePointerUp}
-      style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100dvh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#333', backgroundColor: '#fff', userSelect: isAnyDragging ? 'none' : 'auto', cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto', overflow: 'hidden' }}
+      style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100dvh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#333', backgroundColor: '#fff', textAlign: 'left', userSelect: isAnyDragging ? 'none' : 'auto', cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto', overflow: 'hidden' }}
     >
       {isMobile && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #ddd', flexShrink: 0, gap: '8px' }}>
