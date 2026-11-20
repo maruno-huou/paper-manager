@@ -1825,7 +1825,7 @@ ${extractedText}`;
         </button>
 
         {/* 収納式 Markdown・装飾メニュー（Aa▾：右揃え2列グリッド） */}
-        <div onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'inline-flex', alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
@@ -1898,18 +1898,33 @@ ${extractedText}`;
           )}
         </div>
 
-        {/* Saveボタン（同じ行の右端に自動で収まる） */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginLeft: 'auto' }}>
-          <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '10px', textAlign: 'right' }}>
+        {/* Saveボタン（他のボタンと同じ扱い・同じ高さ） */}
+        <button
+          onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
+          style={{
+            height: '21px',
+            padding: '0 7px',
+            fontSize: '11px',
+            backgroundColor: '#28a745',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            lineHeight: 1,
+            boxSizing: 'border-box'
+          }}
+        >
+          Save
+        </button>
+        {memoStatus && (
+          <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', lineHeight: 1 }}>
             {memoStatus}
           </span>
-          <button
-            onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
-            style={{ height: '21px', padding: '0 7px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-          >
-            Save
-          </button>
-        </div>
+        )}
       </div>
 
       {isMemoPreview ? (
