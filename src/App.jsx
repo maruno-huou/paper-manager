@@ -1667,9 +1667,7 @@ ${extractedText}`;
 
   // ★ 左詰め・タイトな行間・同じ行インライン数式対応メモ欄
   const memoSection = (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
           <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
           {MEMO_COLORS.map(c => (
             <button
@@ -1690,42 +1688,101 @@ ${extractedText}`;
               }}
             />
           ))}
+
           <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
+
+          {/* iPhone風 編集 ⇔ 表示トグルスイッチ */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isMemoPreview}
+            onClick={() => setIsMemoPreview(p => !p)}
+            title={isMemoPreview ? "表示モード（クリックで編集に戻る）" : "編集モード（クリックで数式・Markdownを表示）"}
+            style={{
+              position: 'relative',
+              width: '46px',
+              height: '24px',
+              borderRadius: '999px',
+              border: 'none',
+              backgroundColor: isMemoPreview ? '#34c759' : '#cbd5e1',
+              cursor: 'pointer',
+              padding: 0,
+              transition: 'background-color 0.2s ease',
+              flexShrink: 0
+            }}
+          >
+            <span
+              style={{
+                position: 'absolute',
+                top: '2px',
+                left: '2px',
+                width: '20px',
+                height: '20px',
+                borderRadius: '50%',
+                backgroundColor: '#fff',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '11px',
+                lineHeight: 1,
+                transform: isMemoPreview ? 'translateX(22px)' : 'translateX(0)',
+                transition: 'transform 0.2s ease'
+              }}
+            >
+              {isMemoPreview ? "👁️" : "✏️"}
+            </span>
+          </button>
+
+          <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
+
+          {/* 文中数式（$...$）ボタン：文章の中に変数を入れるイメージ */}
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => handleInsertMath("$")}
-            title="同じ行に変数・数式を挿入（$...$）"
-            style={{ height: '22px', padding: '0 6px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-          >
-            $
-          </button>
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => handleInsertMath("$$")}
-            title="数式（$$...$$）を挿入"
-            style={{ height: '22px', padding: '0 5px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-          >
-            $$
-          </button>
-          <button
-            onClick={() => setIsMemoPreview(p => !p)}
-            title={isMemoPreview ? "編集に戻る" : "Markdown・数式を表示"}
+            title="文章と同じ行に変数・数式を挿入（$...$）"
             style={{
               height: '22px',
               padding: '0 6px',
-              fontSize: '11px',
               border: '1px solid #ccc',
               borderRadius: '4px',
-              backgroundColor: isMemoPreview ? '#007bff' : '#fff',
-              color: isMemoPreview ? '#fff' : '#333',
-              fontWeight: 'bold',
-              cursor: 'pointer'
+              backgroundColor: '#fff',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'baseline',
+              gap: '2px',
+              lineHeight: 1
             }}
           >
-            {isMemoPreview ? "✏️ 編集" : "👁️ 表示"}
+            <span style={{ fontSize: '10px', color: '#888', fontWeight: 'normal' }}>Aa</span>
+            <span style={{ fontSize: '12px', color: '#1a73e8', fontFamily: 'Georgia, serif', fontStyle: 'italic', fontWeight: 'bold' }}>
+              x<sub style={{ fontSize: '8px', fontStyle: 'normal' }}>i</sub>
+            </span>
+          </button>
+
+          {/* 独立数式（$$...$$）ボタン：1行まるごとの大きな数式イメージ */}
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleInsertMath("$$")}
+            title="独立した行に大きな数式を挿入（$$...$$）"
+            style={{
+              height: '22px',
+              padding: '0 6px',
+              border: '1px solid #ccc',
+              borderRadius: '4px',
+              backgroundColor: '#fff',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '2px',
+              lineHeight: 1
+            }}
+          >
+            <span style={{ fontSize: '10px', color: '#999' }}>[</span>
+            <span style={{ fontSize: '12px', color: '#1f2328', fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>∑</span>
+            <span style={{ fontSize: '10px', color: '#999' }}>]</span>
           </button>
         </div>
-
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
           <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '10px', textAlign: 'right' }}>
             {memoStatus}
