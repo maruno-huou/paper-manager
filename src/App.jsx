@@ -1893,7 +1893,7 @@ ${extractedText}`;
                   <span>❝ 引用</span>
                 </button>
                 <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }} title="`コード`">
-                  <span><code></></code> コード</span>
+                  <span><code>{"</>"}</code> コード</span>
                 </button>
               </div>
             )}
