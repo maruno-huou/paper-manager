@@ -88,12 +88,12 @@ const escapeHtml = (str = "") =>
 
 const decodeEntities = (str = "") =>
   str
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ");
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/&/g, "&")
+    .replace(/"/g, '"')
+    .replace(/'/g, "'")
+    .replace(/ /g, " ");
 
 const normalizeTeX = (expr = "") =>
   expr
@@ -157,7 +157,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       .replace(/<\/(div|p)>/gi, "")
       .replace(/<br\s*\/?>/gi, "\n");
 
-    // 色・太字・斜体・下線・打ち消し線タグを安全に退避（Ctrl+B / I / U 対応）
     html = html.replace(/<span\b[^>]*style=["']([^"']+)["'][^>]*>/gi, (_, styleAttr) => {
       const safeStyle = sanitizeInlineStyle(styleAttr);
       return safeStyle ? pushStyleToken(`<span style="${safeStyle}">`) : pushStyleToken(`<span>`);
@@ -261,7 +260,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       continue;
     }
 
-    const bqMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*&gt;\s?(.*)$/);
+    const bqMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*>\s?(.*)$/);
     if (bqMatch) {
       closeLists();
       out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:7px;margin:2px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
@@ -707,7 +706,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // リッチテキスト装飾（太字・斜体・下線・打ち消し線）を直接適用
   const handleApplyRichCommand = (command) => {
     setIsMdMenuOpen(false);
     if (isMemoPreview) setIsMemoPreview(false);
@@ -723,7 +721,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // Markdown記号（見出し・箇条書き・引用など）を挿入
   const handleInsertPrefix = (prefix) => {
     setIsMdMenuOpen(false);
     if (isMemoPreview) setIsMemoPreview(false);
@@ -734,7 +731,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // 囲み記号（$ / $$ / ` など）を挿入し、未選択時はカーソルを真ん中に置く
   const handleInsertDelim = (delim = "$") => {
     setIsMdMenuOpen(false);
     if (isMemoPreview) setIsMemoPreview(false);
@@ -1699,20 +1695,21 @@ ${extractedText}`;
     alignItems: 'center',
     justifyContent: 'space-between',
     width: '100%',
-    padding: '6px 10px',
+    padding: '7px 8px',
     border: 'none',
     backgroundColor: 'transparent',
     color: '#1f2328',
     fontSize: '12px',
     cursor: 'pointer',
     textAlign: 'left',
-    borderBottom: '1px solid #f0f0f0'
+    borderBottom: '1px solid #f0f0f0',
+    boxSizing: 'border-box'
   };
 
   const memoSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
           {MEMO_COLORS.map(c => (
             <button
@@ -1828,8 +1825,8 @@ ${extractedText}`;
             <span style={{ fontSize: '9.5px', color: '#999' }}>]</span>
           </button>
 
-          {/* 収納式 Markdown・装飾メニュー（Aa▾） */}
-          <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+          {/* 収納式 Markdown・装飾メニュー（Aa▾：右揃え2列グリッド） */}
+          <div onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
@@ -1859,48 +1856,44 @@ ${extractedText}`;
               <div
                 style={{
                   position: 'absolute',
-                  top: '25px',
-                  left: 0,
+                  top: '100%',
+                  right: 0,
+                  marginTop: '4px',
                   zIndex: 200,
-                  width: '155px',
+                  width: '210px',
+                  maxWidth: '100%',
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
                   backgroundColor: '#fff',
                   border: '1px solid #ccc',
                   borderRadius: '6px',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
                   overflow: 'hidden'
                 }}
               >
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("bold")} style={mdMenuItemStyle}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("bold")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+B">
                   <span><strong>B</strong> 太字</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+B</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("italic")} style={mdMenuItemStyle}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("italic")} style={mdMenuItemStyle} title="Ctrl+I">
                   <span><em>I</em> 斜体</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+I</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("underline")} style={mdMenuItemStyle}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("underline")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+U">
                   <span><u>U</u> 下線</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+U</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("strikeThrough")} style={mdMenuItemStyle}>
-                  <span><del>S</del> 打ち消し</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>~~</span>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("strikeThrough")} style={mdMenuItemStyle} title="~~打ち消し~~">
+                  <span><del>S</del> 取消</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("## ")} style={mdMenuItemStyle}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("## ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="## 見出し">
                   <span><strong>H</strong> 見出し</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>##</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("- ")} style={mdMenuItemStyle}>
-                  <span>・ 箇条書き</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>-</span>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("- ")} style={mdMenuItemStyle} title="- 箇条書き">
+                  <span>・ 箇条書</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("> ")} style={mdMenuItemStyle}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("> ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0', borderBottom: 'none' }} title="> 引用">
                   <span>❝ 引用</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>&gt;</span>
                 </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }}>
-                  <span><code>&lt;/&gt;</code> コード</span>
-                  <span style={{ fontSize: '10px', color: '#888' }}>` `</span>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }} title="`コード`">
+                  <span><code></></code> コード</span>
                 </button>
               </div>
             )}
