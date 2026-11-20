@@ -95,7 +95,6 @@ const decodeEntities = (str = "") =>
     .replace(/'/g, "'")
     .replace(/ /g, " ");
 
-// 数式内の全角記号を半角に補正するヘルパー
 const normalizeTeX = (expr = "") =>
   expr
     .replace(/@@COL\d+@@/g, "")
@@ -108,7 +107,6 @@ const normalizeTeX = (expr = "") =>
     .replace(/－/g, "-")
     .trim();
 
-// 既存のプレーンテキストや旧 [orange] タグをリッチテキスト用HTMLに変換
 const memoToHtml = (raw = "") => {
   if (!raw) return "";
   if (/<(div|br|span|font|p)\b/i.test(raw)) return raw;
@@ -122,7 +120,6 @@ const memoToHtml = (raw = "") => {
   return html.replace(/\n/g, "<br>");
 };
 
-// ★ Markdown ＋ TeX数式（同じ行インライン対応）＋ 文字色 をきれいに変換する共通エンジン
 const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {}) => {
   if (!rawInput) return "";
 
@@ -159,7 +156,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     working = decodeEntities(html).replace(/^\n+/, "");
   }
 
-  // 1. コードブロック（```...```）を退避
   const codeBlockTokens = [];
   working = working.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, code) => {
     const idx = codeBlockTokens.length;
@@ -172,7 +168,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
 
   const mathTokens = [];
 
-  // 2a. 行全体が $$...$$ だけの箇所 → 独立したブロック数式（左揃え・余白最小）
   working = working.replace(/(^|\n)((?:@@COL\d+@@)*)[ \t]*\$\$([\s\S]+?)\$\$[ \t]*((?:@@COL\d+@@)*)(?=\n|$)/g, (_, lead, preCol, expr, postCol) => {
     const idx = mathTokens.length;
     const rendered = katex.renderToString(normalizeTeX(expr), { displayMode: true, throwOnError: false });
@@ -180,7 +175,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     return `${lead}@@MATHBLK${idx}@@`;
   });
 
-  // 2b. 文章と同じ行に書かれた $$...$$ → 改行せず同じ行（インライン）で表示
   working = working.replace(/\$\$([^$\n]+?)\$\$/g, (_, expr) => {
     const idx = mathTokens.length;
     const rendered = katex.renderToString(normalizeTeX(expr), { displayMode: false, throwOnError: false });
@@ -188,7 +182,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     return `@@MATH${idx}@@`;
   });
 
-  // 3. インライン数式（$...$：前後にスペースがあっても認識）
   working = working.replace(/\$([^$\n]+?)\$/g, (full, expr) => {
     const cleanExpr = normalizeTeX(expr);
     if (!cleanExpr || /^\d+(\.\d+)?[\s→,-]/.test(cleanExpr)) return full;
@@ -198,7 +191,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     return `@@MATH${idx}@@`;
   });
 
-  // 4. インラインコード（`...`）を退避
   const inlineCodeTokens = [];
   working = working.replace(/`([^`\n]+)`/g, (_, code) => {
     const idx = inlineCodeTokens.length;
@@ -209,7 +201,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     return `@@INCODE${idx}@@`;
   });
 
-  // 5. HTMLエスケープ後にMarkdown記法を適用
   let safe = escapeHtml(working);
 
   safe = safe
@@ -295,7 +286,6 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   return result;
 };
 
-// テキストをハイライト位置で分割する共通ヘルパー
 const splitTextByHighlights = (text, paraHighlights) => {
   if (!paraHighlights || paraHighlights.length === 0) return [{ text, highlight: null }];
   let segments = [{ text, highlight: null }];
@@ -320,7 +310,6 @@ const splitTextByHighlights = (text, paraHighlights) => {
   return segments;
 };
 
-// PDFから段落テキストを抽出（リーディングモード用）
 const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
   const response = await fetch(pdfUrl);
   const arrayBuffer = await response.arrayBuffer();
@@ -362,7 +351,6 @@ const extractReadingPagesFromPdf = async (pdfUrl, onProgress) => {
   return pages;
 };
 
-// 別タブ用リーディングモードHTML生成（マーカー反映対応）
 const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontSize = 17, highlights = []) => {
   const safeTitle = escapeHtml(title || "Reading Mode");
   const bodyHtml = pages.map((p) => {
@@ -419,7 +407,6 @@ const buildReadingModeHtml = (title, pages, initialTheme = "light", initialFontS
 </body></html>`;
 };
 
-// IndexedDB（PDFローカル保存用）
 const openPdfDB = () => new Promise((resolve, reject) => {
   const req = indexedDB.open("PaperManagerPDFs", 1);
   req.onupgradeneeded = () => req.result.createObjectStore("pdfs");
@@ -449,7 +436,6 @@ const deletePdfLocally = async (paperId) => {
   idb.transaction("pdfs", "readwrite").objectStore("pdfs").delete(paperId);
 };
 
-// Gemini API（フォールバック付き）
 const generateWithFallback = async (prompt, mode = "flash") => {
   const modelsToTry = mode === "pro"
     ? ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
@@ -470,7 +456,6 @@ const generateWithFallback = async (prompt, mode = "flash") => {
   throw lastError;
 };
 
-// iOS用 Canvas PDF ビューア
 function PdfCanvasViewer({ pdfUrl }) {
   const containerRef = useRef(null);
   const [rendering, setRendering] = useState(true);
@@ -544,7 +529,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // メモ状態
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
   const [isMemoPreview, setIsMemoPreview] = useState(false);
@@ -562,7 +546,6 @@ function App() {
   const [currentPdfUrl, setCurrentPdfUrl] = useState(null);
   const [savedPdfIds, setSavedPdfIds] = useState({});
 
-  // リーディングモード＆マーカー状態
   const [isReadingMode, setIsReadingMode] = useState(false);
   const [readingPages, setReadingPages] = useState(null);
   const [readingLoading, setReadingLoading] = useState(false);
@@ -572,7 +555,6 @@ function App() {
   const [highlights, setHighlights] = useState([]);
   const lastSelectionRef = useRef(null);
 
-  // レイアウト状態
   const [sidebarWidth, setSidebarWidth] = useState(() => loadStorage("pm_sidebarWidth", 280));
   const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
   const [leftWidth, setLeftWidth] = useState(() => loadStorage("pm_leftWidth", 50));
@@ -618,7 +600,6 @@ function App() {
     setReadingProgress("");
   }, [currentPdfUrl]);
 
-  // リアルタイム同期（onSnapshot）
   useEffect(() => {
     if (!isPersonalMode || !selectedPaperId) return;
 
@@ -707,7 +688,6 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  // ★ $ / $$ を挿入し、選択がなければカーソルを真ん中に置く
   const handleInsertMath = (delim = "$") => {
     if (isMemoPreview) setIsMemoPreview(false);
     const editor = memoEditorRef.current;
@@ -719,7 +699,6 @@ function App() {
       document.execCommand("insertText", false, `${delim}${selectedText}${delim}`);
     } else {
       document.execCommand("insertText", false, `${delim}${delim}`);
-      // カーソルを記号の真ん中へ戻す
       if (sel && sel.rangeCount > 0) {
         const range = sel.getRangeAt(0);
         if (range.startContainer.nodeType === 3 && range.startOffset >= delim.length) {
@@ -1620,7 +1599,6 @@ ${extractedText}`;
     </div>
   );
 
-  // AIチャット部分（Markdown ＋ TeX数式レンダリング対応）
   const aiSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '10px' : '12px 16px', boxSizing: 'border-box', textAlign: 'left' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '6px', gap: '8px' }}>
@@ -1665,9 +1643,10 @@ ${extractedText}`;
     </div>
   );
 
-  // ★ 左詰め・タイトな行間・同じ行インライン数式対応メモ欄
   const memoSection = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
           <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
           {MEMO_COLORS.map(c => (
             <button
@@ -1691,7 +1670,6 @@ ${extractedText}`;
 
           <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
 
-          {/* iPhone風 編集 ⇔ 表示トグルスイッチ */}
           <button
             type="button"
             role="switch"
@@ -1736,7 +1714,6 @@ ${extractedText}`;
 
           <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
 
-          {/* 文中数式（$...$）ボタン：文章の中に変数を入れるイメージ */}
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => handleInsertMath("$")}
@@ -1760,7 +1737,6 @@ ${extractedText}`;
             </span>
           </button>
 
-          {/* 独立数式（$$...$$）ボタン：1行まるごとの大きな数式イメージ */}
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => handleInsertMath("$$")}
@@ -1783,6 +1759,7 @@ ${extractedText}`;
             <span style={{ fontSize: '10px', color: '#999' }}>]</span>
           </button>
         </div>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
           <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '10px', textAlign: 'right' }}>
             {memoStatus}
@@ -1872,7 +1849,6 @@ ${extractedText}`;
       onTouchEnd={handlePointerUp}
       style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100dvh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#333', backgroundColor: '#fff', textAlign: 'left', userSelect: isAnyDragging ? 'none' : 'auto', cursor: isDraggingSidebar || isDragging ? 'col-resize' : isDraggingVertical ? 'row-resize' : 'auto', overflow: 'hidden' }}
     >
-      {/* KaTeXのディスプレイ数式を左揃え＆余白スリムに固定 */}
       <style>{`.katex-display { margin: 2px 0 !important; text-align: left !important; } .katex { font-size: 1.05em; }`}</style>
 
       {isMobile && (
