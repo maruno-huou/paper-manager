@@ -16,7 +16,7 @@ const DEMO_PAPERS = [
     title: "Minimum Wages and Employment: A Case Study of the Fast-Food Industry (Card & Krueger, 1994)",
     folder: "Labor Economics/Minimum Wage",
     abstract: "Research Question: Does an increase in the minimum wage reduce employment in low-wage industries?\nData Used: Survey data from 410 fast-food restaurants in New Jersey and eastern Pennsylvania before and after NJ's 1992 minimum wage increase.\nMethodology: Difference-in-Differences (DID).\nConclusion: Found no indication that the rise in the minimum wage reduced employment.",
-    memo: "[blue]【識別戦略メモ】[/blue]\n・処置群：ニュージャージー州（最低賃金 $4.25 → $5.05）\n・対照群：隣接するペンシルベニア州東部（$4.25のまま）\n$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
+    memo: "<span style=\"color:#1a73e8\">【識別戦略メモ】</span><br>・処置群：ニュージャージー州（最低賃金 $4.25 → $5.05）<br>・対照群：隣接するペンシルベニア州東部（$4.25のまま）<br>$$\\Delta E_i = \\alpha + \\beta \\cdot \\text{NJ}_i + \\varepsilon_i$$"
   },
   {
     id: "demo-2",
@@ -86,7 +86,63 @@ const escapeHtml = (str = "") =>
     .replace(/"/g, "&" + "quot;")
     .replace(/'/g, "&" + "#39;");
 
-// ★ TeX数式（$$...$$ / $...$）をKaTeXで描画するヘルパー
+// 既存のプレーンテキストや [orange] タグをリッチテキスト用HTMLに変換（後方互換）
+const memoToHtml = (raw = "") => {
+  if (!raw) return "";
+  if (/<(div|br|span|font|p)\b/i.test(raw)) return raw;
+  let html = escapeHtml(raw);
+  // 旧 [color]...[/color] タグを変換（入れ子にも対応するため複数回適用）
+  for (let i = 0; i < 4; i++) {
+    html = html.replace(
+      /\[(black|orange|blue|green)\]([\s\S]*?)\[\/\1\]/g,
+      (_, c, inner) => `<span style="color:${MEMO_COLOR_MAP[c] || '#1f2328'}">${inner}</span>`
+    );
+  }
+  return html.replace(/\n/g, "<br>");
+};
+
+// リッチテキストHTMLの色・改行を保ったまま、中の $$...$$ / $...$ をKaTeX変換するヘルパー
+const renderHtmlWithMath = (raw = "") => {
+  if (!raw) return "";
+  const container = document.createElement("div");
+  container.innerHTML = memoToHtml(raw);
+
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      const text = node.nodeValue;
+      if (!text || !text.includes("$")) return;
+      const escaped = escapeHtml(text);
+      let replaced = escaped.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
+        const unescaped = expr
+          .replace(/</g, "<")
+          .replace(/>/g, ">")
+          .replace(/&/g, "&");
+        const rendered = katex.renderToString(unescaped.trim(), { displayMode: true, throwOnError: false });
+        return `<div style="overflow-x:auto;margin:6px 0;">${rendered}</div>`;
+      });
+      replaced = replaced.replace(/\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (full, expr) => {
+        if (/^\d+(\.\d+)?[\s→,-]/.test(expr)) return full;
+        const unescaped = expr
+          .replace(/</g, "<")
+          .replace(/>/g, ">")
+          .replace(/&/g, "&");
+        return katex.renderToString(unescaped.trim(), { displayMode: false, throwOnError: false });
+      });
+      if (replaced !== escaped) {
+        const span = document.createElement("span");
+        span.innerHTML = replaced;
+        node.parentNode.replaceChild(span, node);
+      }
+    } else if (node.nodeType === 1 && !node.classList?.contains("katex")) {
+      Array.from(node.childNodes).forEach(walk);
+    }
+  };
+
+  walk(container);
+  return container.innerHTML;
+};
+
+// AIチャット用：TeX数式（$$...$$ / $...$）をKaTeXで描画するヘルパー
 const renderMathSegments = (text, keyPrefix = "") => {
   if (!text) return null;
   const parts = [];
@@ -102,18 +158,12 @@ const renderMathSegments = (text, keyPrefix = "") => {
     let inMatch;
     while ((inMatch = inlineRegex.exec(plainStr)) !== null) {
       const expr = inMatch[1];
-      // 通貨表記（例: $4.25 → $5.05）を誤変換しないガード
       if (/^\d+(\.\d+)?[\s→,-]/.test(expr)) continue;
       if (inMatch.index > inLast) {
         parts.push(<span key={`${keyPrefix}-t-${count++}`}>{plainStr.slice(inLast, inMatch.index)}</span>);
       }
       const html = katex.renderToString(expr.trim(), { displayMode: false, throwOnError: false });
-      parts.push(
-        <span
-          key={`${keyPrefix}-im-${count++}`}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      );
+      parts.push(<span key={`${keyPrefix}-im-${count++}`} dangerouslySetInnerHTML={{ __html: html }} />);
       inLast = inMatch.index + inMatch[0].length;
     }
     if (inLast < plainStr.length) {
@@ -122,9 +172,7 @@ const renderMathSegments = (text, keyPrefix = "") => {
   };
 
   while ((match = blockRegex.exec(text)) !== null) {
-    if (match.index > lastIdx) {
-      pushInlineMath(text.slice(lastIdx, match.index));
-    }
+    if (match.index > lastIdx) pushInlineMath(text.slice(lastIdx, match.index));
     const html = katex.renderToString(match[1].trim(), { displayMode: true, throwOnError: false });
     parts.push(
       <div
@@ -136,52 +184,9 @@ const renderMathSegments = (text, keyPrefix = "") => {
     lastIdx = match.index + match[0].length;
   }
 
-  if (lastIdx < text.length) {
-    pushInlineMath(text.slice(lastIdx));
-  }
+  if (lastIdx < text.length) pushInlineMath(text.slice(lastIdx));
   return parts;
 };
-
-// ★ 文字色タグ（[orange]...[/orange] 等）＋ TeX数式をまとめて描画するコンポーネント
-function RichMathText({ text, allowColors = false }) {
-  if (!text) return null;
-  if (!allowColors) {
-    return <>{renderMathSegments(text, "ai")}</>;
-  }
-
-  const colorRegex = /\[(black|orange|blue|green)\]([\s\S]*?)\[\/\1\]/g;
-  const nodes = [];
-  let lastIdx = 0;
-  let match;
-  let idx = 0;
-
-  while ((match = colorRegex.exec(text)) !== null) {
-    if (match.index > lastIdx) {
-      nodes.push(
-        <span key={`plain-${idx++}`}>
-          {renderMathSegments(text.slice(lastIdx, match.index), `p${idx}`)}
-        </span>
-      );
-    }
-    const colorKey = match[1];
-    const innerText = match[2];
-    nodes.push(
-      <span key={`col-${idx++}`} style={{ color: MEMO_COLOR_MAP[colorKey] || '#1f2328' }}>
-        {renderMathSegments(innerText, `c${idx}`)}
-      </span>
-    );
-    lastIdx = match.index + match[0].length;
-  }
-
-  if (lastIdx < text.length) {
-    nodes.push(
-      <span key={`tail-${idx++}`}>
-        {renderMathSegments(text.slice(lastIdx), `t${idx}`)}
-      </span>
-    );
-  }
-  return <>{nodes}</>;
-}
 
 // テキストをハイライト位置で分割する共通ヘルパー
 const splitTextByHighlights = (text, paraHighlights) => {
@@ -432,12 +437,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // メモ状態（編集 / 分割 / 表示モード）
+  // ★ メモ状態（リッチテキスト直接編集 ＋ 数式プレビュー切替）
   const [memoText, setMemoText] = useState("");
   const [memoStatus, setMemoStatus] = useState("");
-  const [memoViewMode, setMemoViewMode] = useState(() => loadStorage("pm_memoViewMode", "edit"));
+  const [isMemoPreview, setIsMemoPreview] = useState(false);
+  const [activeMemoColor, setActiveMemoColor] = useState("#1f2328");
   const isEditingMemoRef = useRef(false);
-  const memoTextareaRef = useRef(null);
+  const memoEditorRef = useRef(null);
 
   const [isAdding, setIsAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -479,6 +485,16 @@ function App() {
   const hasRestoredForMode = useRef(null);
   const isSidebarOpen = sidebarWidth > 0;
   const selectedPaperId = selectedPaper?.id || null;
+
+  // エディタへHTMLを安全に同期（論文切替時・プレビュー解除時・タブ切替時）
+  useEffect(() => {
+    if (!isMemoPreview && memoEditorRef.current) {
+      const targetHtml = memoToHtml(memoText);
+      if (memoEditorRef.current.innerHTML !== targetHtml) {
+        memoEditorRef.current.innerHTML = targetHtml;
+      }
+    }
+  }, [selectedPaperId, isMemoPreview, mobileTab]);
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -522,13 +538,19 @@ function App() {
         if (!isEditingMemoRef.current) {
           const remoteMemo = data.memo || "";
           setMemoText((prev) => (prev === remoteMemo ? prev : remoteMemo));
+          if (memoEditorRef.current && !isMemoPreview) {
+            const remoteHtml = memoToHtml(remoteMemo);
+            if (memoEditorRef.current.innerHTML !== remoteHtml) {
+              memoEditorRef.current.innerHTML = remoteHtml;
+            }
+          }
         }
       },
       (error) => console.error("Realtime sync error:", error)
     );
 
     return () => unsub();
-  }, [isPersonalMode, selectedPaperId]);
+  }, [isPersonalMode, selectedPaperId, isMemoPreview]);
 
   // iOSでもボタン押下前に選択テキストを保持するリスナー
   useEffect(() => {
@@ -565,29 +587,34 @@ function App() {
   useEffect(() => saveStorage("pm_chats", chatHistoryMap), [chatHistoryMap]);
   useEffect(() => saveStorage("pm_readingTheme", readingTheme), [readingTheme]);
   useEffect(() => saveStorage("pm_readingFontSize", readingFontSize), [readingFontSize]);
-  useEffect(() => saveStorage("pm_memoViewMode", memoViewMode), [memoViewMode]);
 
-  // ★ メモに色タグや $$ 数式を挿入するヘルパー
-  const applyMemoFormat = (prefix, suffix) => {
-    const el = memoTextareaRef.current;
-    if (!el) {
-      setMemoText(prev => prev + prefix + suffix);
-      return;
+  // ★ メモの文字色を直接適用（カッコを出さずにそのまま色付け）
+  const handleApplyMemoColor = (colorCode) => {
+    setActiveMemoColor(colorCode);
+    if (isMemoPreview) setIsMemoPreview(false);
+    const editor = memoEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    try {
+      document.execCommand("styleWithCSS", false, true);
+      document.execCommand("foreColor", false, colorCode);
+    } catch (e) {
+      document.execCommand("foreColor", false, colorCode);
     }
-    const start = el.selectionStart ?? memoText.length;
-    const end = el.selectionEnd ?? memoText.length;
-    const selected = memoText.slice(start, end);
-    const updated = memoText.slice(0, start) + prefix + selected + suffix + memoText.slice(end);
-    setMemoText(updated);
+    setMemoText(editor.innerHTML);
+  };
 
-    const nextCursor = selected.length > 0
-      ? start + prefix.length + selected.length + suffix.length
-      : start + prefix.length;
-
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(nextCursor, nextCursor);
-    });
+  // ★ メモのカーソル位置に $$ 数式 $$ を挿入
+  const handleInsertMath = () => {
+    if (isMemoPreview) setIsMemoPreview(false);
+    const editor = memoEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const sel = window.getSelection();
+    const selectedText = sel ? sel.toString() : "";
+    const snippet = selectedText ? `$$${selectedText}$$` : `$$  $$`;
+    document.execCommand("insertText", false, snippet);
+    setMemoText(editor.innerHTML);
   };
 
   // マーカーの保存・同期
@@ -673,11 +700,12 @@ function App() {
         pagesToShow = await extractReadingPagesFromPdf(currentPdfUrl);
         setReadingPages(pagesToShow);
       } else if (!pagesToShow && selectedPaper?.abstract) {
+        const plainMemo = memoText.replace(/<[^>]+>/g, " ").trim();
         pagesToShow = [{
           pageNum: 1,
           paragraphs: [
             ...(selectedPaper.abstract || "").split("\n").filter(Boolean),
-            ...(memoText ? ["--- Notes ---", ...memoText.split("\n").filter(Boolean)] : [])
+            ...(plainMemo ? ["--- Notes ---", plainMemo] : [])
           ]
         }];
       }
@@ -816,18 +844,18 @@ function App() {
       setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, memo: textToSave } : p)));
       setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, memo: textToSave } : prev));
       isEditingMemoRef.current = false;
-      setMemoStatus("Saved (Demo) ✓");
+      setMemoStatus("✓");
       return;
     }
-    setMemoStatus("Saving...");
+    setMemoStatus("...");
     try {
       await updateDoc(doc(db, "papers", paperId), { memo: textToSave });
       setPapers(prev => prev.map(p => (p.id === paperId ? { ...p, memo: textToSave } : p)));
       setSelectedPaper(prev => (prev && prev.id === paperId ? { ...prev, memo: textToSave } : prev));
       isEditingMemoRef.current = false;
-      setMemoStatus("Saved ✓");
+      setMemoStatus("✓");
     } catch (error) {
-      setMemoStatus("Save failed");
+      setMemoStatus("!");
     }
   };
 
@@ -838,7 +866,7 @@ function App() {
       return;
     }
     isEditingMemoRef.current = true;
-    setMemoStatus("Editing...");
+    setMemoStatus("…");
     const timer = setTimeout(() => handleSaveMemo(selectedPaper.id, memoText), 1200);
     return () => clearTimeout(timer);
   }, [memoText, selectedPaper]);
@@ -1101,7 +1129,8 @@ function App() {
     setLoadingMessage("Gemini is generating an answer...");
 
     try {
-      const contextText = selectedPaper.abstract || memoText || "No abstract provided.";
+      const plainMemo = memoText.replace(/<[^>]+>/g, " ").trim();
+      const contextText = selectedPaper.abstract || plainMemo || "No abstract provided.";
       const prompt = `This is a question regarding the paper "${selectedPaper.title}". Please answer based on the following content. Write your answer entirely in ${aiLanguage}. When writing mathematical formulas, use LaTeX syntax wrapped in $$...$$ for display equations and $...$ for inline variables/equations.\nContent: ${contextText}\n\nQuestion: ${question}`;
       const responseText = await generateWithFallback(prompt, "pro");
       await updateChatForPaper(selectedPaper.id, [...newChat, { role: 'ai', text: responseText }]);
@@ -1484,182 +1513,169 @@ ${extractedText}`;
     </div>
   );
 
-  // ★ AIチャット部分（TeX数式レンダリング対応）
+  // AIチャット部分（TeX数式レンダリング対応）
   const aiSection = (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '12px' : '15px 20px', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '8px', marginBottom: '8px', gap: '8px' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '10px' : '12px 16px', boxSizing: 'border-box' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '6px', gap: '8px' }}>
+        <h3 style={{ margin: 0, fontSize: '14px', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           🤖 AI Assistant — {selectedPaper?.title}
         </h3>
-        <button onClick={() => selectedPaper && runInitialSummary(selectedPaper)} disabled={loading} style={{ background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '3px 8px', fontSize: '11px', color: '#555', cursor: 'pointer', flexShrink: 0 }}>
+        <button onClick={() => selectedPaper && runInitialSummary(selectedPaper)} disabled={loading} style={{ background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '2px 7px', fontSize: '11px', color: '#555', cursor: 'pointer', flexShrink: 0 }}>
           ↻ Reset
         </button>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '6px 0' }}>
+      <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '4px 0' }}>
         {chat.map((msg, i) => (
-          <div key={i} style={{ marginBottom: '12px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
-            <div style={{ display: 'inline-block', padding: '10px 14px', borderRadius: '10px', backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f4', color: msg.role === 'user' ? 'white' : 'black', maxWidth: '90%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.6', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
-              <RichMathText text={msg.text} allowColors={false} />
+          <div key={i} style={{ marginBottom: '10px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
+            <div style={{ display: 'inline-block', padding: '9px 13px', borderRadius: '10px', backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f4', color: msg.role === 'user' ? 'white' : 'black', maxWidth: '92%', fontSize: isMobile ? '14px' : '13px', lineHeight: '1.6', whiteSpace: 'pre-wrap', textAlign: 'left', wordBreak: 'break-word' }}>
+              {renderMathSegments(msg.text, `m-${i}`)}
             </div>
           </div>
         ))}
         {loading && <div style={{ color: '#666', fontSize: '13px', marginTop: '6px' }}>⏳ {loadingMessage}</div>}
         <div ref={chatEndRef} />
       </div>
-      <div style={{ display: 'flex', marginTop: '10px', paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px' }}>
+      <div style={{ display: 'flex', marginTop: '8px', paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px' }}>
         <input
           type="text"
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && handleSendMessage()}
           placeholder={`Ask Gemini (${aiLanguage})...`}
-          style={{ flex: 1, padding: '10px 12px', fontSize: isMobile ? '16px' : '14px', borderRadius: '4px 0 0 4px', border: '1px solid #ccc', color: '#333', backgroundColor: '#fff', minWidth: 0 }}
+          style={{ flex: 1, padding: '8px 10px', fontSize: isMobile ? '16px' : '13.5px', borderRadius: '4px 0 0 4px', border: '1px solid #ccc', color: '#333', backgroundColor: '#fff', minWidth: 0 }}
         />
-        <button onClick={handleSendMessage} disabled={loading} style={{ padding: '10px 16px', fontSize: '14px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '0 4px 4px 0', cursor: 'pointer', flexShrink: 0 }}>
+        <button onClick={handleSendMessage} disabled={loading} style={{ padding: '8px 14px', fontSize: '13px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '0 4px 4px 0', cursor: 'pointer', flexShrink: 0 }}>
           Send
         </button>
       </div>
     </div>
   );
 
-  // ★ メモ帳部分（色選択＋TeX数式入力＆プレビュー対応）
+  // ★ 超スリム1行ツールバー ＋ カッコ無し直接色付けメモ欄
   const memoSection = (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '12px' : '12px 18px', backgroundColor: '#fafafa', boxSizing: 'border-box' }}>
-      {/* ヘッダー：モード切替＆保存 */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', gap: '6px', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#333' }}>📝 Memo</span>
-          <div style={{ display: 'inline-flex', border: '1px solid #ccc', borderRadius: '5px', overflow: 'hidden', backgroundColor: '#fff' }}>
-            {[
-              { id: "edit", label: "✏️ 編集" },
-              { id: "split", label: "◫ 分割" },
-              { id: "preview", label: "👁️ 表示" }
-            ].map(m => (
-              <button
-                key={m.id}
-                onClick={() => setMemoViewMode(m.id)}
-                style={{
-                  padding: '3px 7px',
-                  fontSize: '11px',
-                  border: 'none',
-                  borderRight: m.id !== "preview" ? '1px solid #ddd' : 'none',
-                  backgroundColor: memoViewMode === m.id ? '#007bff' : '#fff',
-                  color: memoViewMode === m.id ? '#fff' : '#333',
-                  fontWeight: memoViewMode === m.id ? 'bold' : 'normal',
-                  cursor: 'pointer'
-                }}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 14px', backgroundColor: '#fafafa', boxSizing: 'border-box' }}>
+      {/* スリム1行バー */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+          <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#333', marginRight: '2px' }}>📝</span>
+          {MEMO_COLORS.map(c => (
+            <button
+              key={c.key}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleApplyMemoColor(c.code)}
+              title={`文字色：${c.label}`}
+              style={{
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                backgroundColor: c.code,
+                border: activeMemoColor === c.code ? '2px solid #007bff' : '1px solid #bbb',
+                boxShadow: activeMemoColor === c.code ? '0 0 0 1px #fff inset' : 'none',
+                cursor: 'pointer',
+                padding: 0,
+                flexShrink: 0
+              }}
+            />
+          ))}
+          <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleInsertMath}
+            title="TeX数式（$$...$$）を挿入"
+            style={{ height: '22px', padding: '0 6px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#fff', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            $$
+          </button>
+          <button
+            onClick={() => setIsMemoPreview(p => !p)}
+            title={isMemoPreview ? "編集に戻る" : "数式をきれいに表示"}
+            style={{
+              height: '22px',
+              padding: '0 7px',
+              fontSize: '11px',
+              border: '1px solid #ccc',
+              borderRadius: '4px',
+              backgroundColor: isMemoPreview ? '#007bff' : '#fff',
+              color: isMemoPreview ? '#fff' : '#333',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            {isMemoPreview ? "✏️ 編集" : "👁️ 数式"}
+          </button>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '11px', color: memoStatus.includes('Saved') ? '#28a745' : '#888' }}>{memoStatus}</span>
-          <button onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)} style={{ padding: '4px 10px', fontSize: '12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '12px', textAlign: 'right' }}>
+            {memoStatus}
+          </span>
+          <button
+            onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
+            style={{ height: '22px', padding: '0 8px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+          >
             Save
           </button>
         </div>
       </div>
 
-      {/* 文字色＆数式ツールバー（編集・分割モード時に表示） */}
-      {memoViewMode !== "preview" && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', marginBottom: '6px', padding: '4px 8px', backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '5px', flexShrink: 0 }}>
-          <span style={{ fontSize: '11px', color: '#666' }}>文字色:</span>
-          {MEMO_COLORS.map(c => (
-            <button
-              key={c.key}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => applyMemoFormat(`[${c.key}]`, `[/${c.key}]`)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                padding: '2px 7px',
-                fontSize: '11px',
-                border: '1px solid #ccc',
-                borderRadius: '12px',
-                backgroundColor: '#fff',
-                color: c.code,
-                fontWeight: 'bold',
-                cursor: 'pointer'
-              }}
-              title={`選択した文字を${c.label}色にする`}
-            >
-              <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: c.code, display: 'inline-block' }} />
-              {c.label}
-            </button>
-          ))}
-          <span style={{ width: '1px', height: '16px', backgroundColor: '#ddd', margin: '0 2px' }} />
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => applyMemoFormat("$$", "$$")}
-            style={{ padding: '2px 8px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#f8f9fa', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-            title="ブロック数式（$$...$$）を挿入"
-          >
-            $$ 数式
-          </button>
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => applyMemoFormat("$", "$")}
-            style={{ padding: '2px 7px', fontSize: '11px', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#f8f9fa', color: '#333', fontWeight: 'bold', cursor: 'pointer' }}
-            title="文中数式（$...$）を挿入"
-          >
-            $ 変数
-          </button>
-        </div>
+      {/* メモ本体（広々とした1エリア） */}
+      {isMemoPreview ? (
+        <div
+          onClick={() => setIsMemoPreview(false)}
+          title="クリックして編集に戻る"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            padding: '10px 12px',
+            fontSize: isMobile ? '15px' : '13.5px',
+            lineHeight: '1.7',
+            border: '1px solid #007bff',
+            borderRadius: '6px',
+            backgroundColor: '#fff',
+            color: '#1f2328',
+            wordBreak: 'break-word',
+            boxSizing: 'border-box',
+            marginBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px',
+            cursor: 'text'
+          }}
+          dangerouslySetInnerHTML={{
+            __html: memoText
+              ? renderHtmlWithMath(memoText)
+              : '<span style="color:#999;font-size:12px;">（メモはまだありません）</span>'
+          }}
+        />
+      ) : (
+        <div
+          ref={memoEditorRef}
+          contentEditable
+          suppressContentEditableWarning
+          onInput={(e) => setMemoText(e.currentTarget.innerHTML)}
+          onPaste={(e) => {
+            e.preventDefault();
+            const text = e.clipboardData.getData('text/plain');
+            document.execCommand('insertText', false, text);
+          }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            padding: '10px 12px',
+            fontSize: isMobile ? '16px' : '13.5px',
+            lineHeight: '1.65',
+            border: '1px solid #ccc',
+            borderRadius: '6px',
+            backgroundColor: '#fff',
+            color: '#1f2328',
+            wordBreak: 'break-word',
+            boxSizing: 'border-box',
+            outline: 'none',
+            marginBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px'
+          }}
+        />
       )}
-
-      {/* 本体：編集エリア / プレビューエリア */}
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: memoViewMode === "split" && isMobile ? 'column' : 'row', gap: '8px', marginBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0px' }}>
-        {memoViewMode !== "preview" && (
-          <textarea
-            ref={memoTextareaRef}
-            value={memoText}
-            onChange={(e) => setMemoText(e.target.value)}
-            placeholder={isPersonalMode ? "メモを入力... ($$数式$$ や上の色ボタンが使えます)" : "Write your notes here (Demo mode)..."}
-            style={{
-              flex: 1,
-              width: '100%',
-              boxSizing: 'border-box',
-              padding: '10px 12px',
-              fontSize: isMobile ? '16px' : '13.5px',
-              lineHeight: '1.6',
-              border: '1px solid #ccc',
-              borderRadius: '6px',
-              backgroundColor: '#fff',
-              color: '#1f2328',
-              resize: 'none',
-              fontFamily: 'inherit'
-            }}
-          />
-        )}
-        {memoViewMode !== "edit" && (
-          <div
-            style={{
-              flex: 1,
-              overflowY: 'auto',
-              WebkitOverflowScrolling: 'touch',
-              padding: '10px 12px',
-              fontSize: isMobile ? '15px' : '13.5px',
-              lineHeight: '1.7',
-              border: '1px solid #ccc',
-              borderRadius: '6px',
-              backgroundColor: '#fff',
-              color: '#1f2328',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              boxSizing: 'border-box'
-            }}
-          >
-            {memoText ? (
-              <RichMathText text={memoText} allowColors={true} />
-            ) : (
-              <span style={{ color: '#999', fontSize: '12px' }}>（プレビューがここに表示されます）</span>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 
