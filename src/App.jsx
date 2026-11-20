@@ -88,16 +88,16 @@ const escapeHtml = (str = "") =>
 
 const decodeEntities = (str = "") =>
   str
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/&/g, "&")
-    .replace(/"/g, '"')
-    .replace(/'/g, "'")
-    .replace(/ /g, " ");
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
 
 const normalizeTeX = (expr = "") =>
   expr
-    .replace(/@@COL\d+@@/g, "")
+    .replace(/@@STY\d+@@/g, "")
     .replace(/＿/g, "_")
     .replace(/＾/g, "^")
     .replace(/｛/g, "{")
@@ -109,7 +109,7 @@ const normalizeTeX = (expr = "") =>
 
 const memoToHtml = (raw = "") => {
   if (!raw) return "";
-  if (/<(div|br|span|font|p)\b/i.test(raw)) return raw;
+  if (/<(div|br|span|font|p|b|strong|i|em|u|s|strike|del)\b/i.test(raw)) return raw;
   let html = escapeHtml(raw);
   for (let i = 0; i < 4; i++) {
     html = html.replace(
@@ -120,11 +120,32 @@ const memoToHtml = (raw = "") => {
   return html.replace(/\n/g, "<br>");
 };
 
+const sanitizeInlineStyle = (styleStr = "") => {
+  const allowed = [];
+  styleStr.split(";").forEach(rule => {
+    const [propRaw, valRaw] = rule.split(":");
+    if (!propRaw || !valRaw) return;
+    const prop = propRaw.trim().toLowerCase();
+    const val = valRaw.trim();
+    if (["color", "font-weight", "font-style", "text-decoration", "text-decoration-line"].includes(prop)) {
+      if (!/[<>()]|url|expression/i.test(val)) {
+        allowed.push(`${prop}:${val}`);
+      }
+    }
+  });
+  return allowed.join(";");
+};
+
 const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {}) => {
   if (!rawInput) return "";
 
   let working = rawInput;
-  const colorTokens = [];
+  const styleTokens = [];
+  const pushStyleToken = (tagHtml) => {
+    const idx = styleTokens.length;
+    styleTokens.push(tagHtml);
+    return `@@STY${idx}@@`;
+  };
 
   if (preserveColors) {
     let html = memoToHtml(rawInput);
@@ -136,21 +157,18 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       .replace(/<\/(div|p)>/gi, "")
       .replace(/<br\s*\/?>/gi, "\n");
 
-    html = html.replace(/<span\b[^>]*style=["'][^"']*color\s*:\s*([^;"']+)[^"']*["'][^>]*>/gi, (_, col) => {
-      const idx = colorTokens.length;
-      colorTokens.push(`<span style="color:${col.trim()}">`);
-      return `@@COL${idx}@@`;
+    // 色・太字・斜体・下線・打ち消し線タグを安全に退避（Ctrl+B / I / U 対応）
+    html = html.replace(/<span\b[^>]*style=["']([^"']+)["'][^>]*>/gi, (_, styleAttr) => {
+      const safeStyle = sanitizeInlineStyle(styleAttr);
+      return safeStyle ? pushStyleToken(`<span style="${safeStyle}">`) : pushStyleToken(`<span>`);
     });
-    html = html.replace(/<font\b[^>]*color=["']?([^"'\s>]+)["']?[^>]*>/gi, (_, col) => {
-      const idx = colorTokens.length;
-      colorTokens.push(`<span style="color:${col.trim()}">`);
-      return `@@COL${idx}@@`;
-    });
-    html = html.replace(/<\/(span|font)>/gi, () => {
-      const idx = colorTokens.length;
-      colorTokens.push(`</span>`);
-      return `@@COL${idx}@@`;
-    });
+    html = html.replace(/<font\b[^>]*color=["']?([^"'\s>]+)["']?[^>]*>/gi, (_, col) =>
+      pushStyleToken(`<span style="color:${col.trim()}">`)
+    );
+    html = html.replace(/<\/(span|font)>/gi, () => pushStyleToken(`</span>`));
+    html = html.replace(/<(\/?)(b|strong|i|em|u|s|strike|del)\b[^>]*>/gi, (_, slash, tag) =>
+      pushStyleToken(`<${slash}${tag.toLowerCase()}>`)
+    );
 
     html = html.replace(/<[^>]+>/g, "");
     working = decodeEntities(html).replace(/^\n+/, "");
@@ -159,7 +177,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   const codeBlockTokens = [];
   working = working.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, code) => {
     const idx = codeBlockTokens.length;
-    const cleanCode = code.replace(/@@COL\d+@@/g, "");
+    const cleanCode = code.replace(/@@STY\d+@@/g, "");
     codeBlockTokens.push(
       `<pre style="background:#f3f4f6;color:#1f2328;padding:6px 8px;border-radius:5px;overflow-x:auto;font-size:12px;margin:4px 0;font-family:monospace;line-height:1.4;"><code>${escapeHtml(cleanCode.trimEnd())}</code></pre>`
     );
@@ -168,10 +186,10 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
 
   const mathTokens = [];
 
-  working = working.replace(/(^|\n)((?:@@COL\d+@@)*)[ \t]*\$\$([\s\S]+?)\$\$[ \t]*((?:@@COL\d+@@)*)(?=\n|$)/g, (_, lead, preCol, expr, postCol) => {
+  working = working.replace(/(^|\n)((?:@@STY\d+@@)*)[ \t]*\$\$([\s\S]+?)\$\$[ \t]*((?:@@STY\d+@@)*)(?=\n|$)/g, (_, lead, preSty, expr, postSty) => {
     const idx = mathTokens.length;
     const rendered = katex.renderToString(normalizeTeX(expr), { displayMode: true, throwOnError: false });
-    mathTokens.push(`<div style="overflow-x:auto;margin:2px 0;text-align:left;">${preCol}${rendered}${postCol}</div>`);
+    mathTokens.push(`<div style="overflow-x:auto;margin:2px 0;text-align:left;">${preSty}${rendered}${postSty}</div>`);
     return `${lead}@@MATHBLK${idx}@@`;
   });
 
@@ -194,7 +212,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   const inlineCodeTokens = [];
   working = working.replace(/`([^`\n]+)`/g, (_, code) => {
     const idx = inlineCodeTokens.length;
-    const cleanCode = code.replace(/@@COL\d+@@/g, "");
+    const cleanCode = code.replace(/@@STY\d+@@/g, "");
     inlineCodeTokens.push(
       `<code style="background:#eef0f3;color:#c7254e;padding:1px 4px;border-radius:3px;font-size:0.92em;font-family:monospace;">${escapeHtml(cleanCode)}</code>`
     );
@@ -227,7 +245,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       continue;
     }
 
-    const hMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*(#{1,3})\s+(.+)$/);
+    const hMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*(#{1,3})\s+(.+)$/);
     if (hMatch) {
       closeLists();
       const level = hMatch[2].length;
@@ -243,14 +261,14 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       continue;
     }
 
-    const bqMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*>\s?(.*)$/);
+    const bqMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*&gt;\s?(.*)$/);
     if (bqMatch) {
       closeLists();
       out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:7px;margin:2px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
       continue;
     }
 
-    const ulMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*[-*]\s+(.+)$/);
+    const ulMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*[-*]\s+(.+)$/);
     if (ulMatch) {
       if (inOl) { out.push("</ol>"); inOl = false; }
       if (!inUl) { out.push(`<ul style="margin:2px 0;padding-left:18px;">`); inUl = true; }
@@ -258,7 +276,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       continue;
     }
 
-    const olMatch = rawLine.match(/^((?:@@COL\d+@@)*)\s*\d+\.\s+(.+)$/);
+    const olMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*\d+\.\s+(.+)$/);
     if (olMatch) {
       if (inUl) { out.push("</ul>"); inUl = false; }
       if (!inOl) { out.push(`<ol style="margin:2px 0;padding-left:20px;">`); inOl = true; }
@@ -281,7 +299,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
   result = result.replace(/@@MATHBLK(\d+)@@/g, (_, i) => mathTokens[Number(i)] || "");
   result = result.replace(/@@MATH(\d+)@@/g, (_, i) => mathTokens[Number(i)] || "");
   result = result.replace(/@@CODEBLK(\d+)@@/g, (_, i) => codeBlockTokens[Number(i)] || "");
-  result = result.replace(/@@COL(\d+)@@/g, (_, i) => colorTokens[Number(i)] || "");
+  result = result.replace(/@@STY(\d+)@@/g, (_, i) => styleTokens[Number(i)] || "");
 
   return result;
 };
@@ -533,6 +551,7 @@ function App() {
   const [memoStatus, setMemoStatus] = useState("");
   const [isMemoPreview, setIsMemoPreview] = useState(false);
   const [activeMemoColor, setActiveMemoColor] = useState("#1f2328");
+  const [isMdMenuOpen, setIsMdMenuOpen] = useState(false);
   const isEditingMemoRef = useRef(false);
   const memoEditorRef = useRef(null);
 
@@ -688,7 +707,36 @@ function App() {
     setMemoText(editor.innerHTML);
   };
 
-  const handleInsertMath = (delim = "$") => {
+  // リッチテキスト装飾（太字・斜体・下線・打ち消し線）を直接適用
+  const handleApplyRichCommand = (command) => {
+    setIsMdMenuOpen(false);
+    if (isMemoPreview) setIsMemoPreview(false);
+    const editor = memoEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    try {
+      document.execCommand("styleWithCSS", false, false);
+      document.execCommand(command, false, null);
+    } catch (e) {
+      document.execCommand(command, false, null);
+    }
+    setMemoText(editor.innerHTML);
+  };
+
+  // Markdown記号（見出し・箇条書き・引用など）を挿入
+  const handleInsertPrefix = (prefix) => {
+    setIsMdMenuOpen(false);
+    if (isMemoPreview) setIsMemoPreview(false);
+    const editor = memoEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    document.execCommand("insertText", false, prefix);
+    setMemoText(editor.innerHTML);
+  };
+
+  // 囲み記号（$ / $$ / ` など）を挿入し、未選択時はカーソルを真ん中に置く
+  const handleInsertDelim = (delim = "$") => {
+    setIsMdMenuOpen(false);
     if (isMemoPreview) setIsMemoPreview(false);
     const editor = memoEditorRef.current;
     if (!editor) return;
@@ -919,9 +967,12 @@ function App() {
   }, [isPersonalMode]);
 
   useEffect(() => {
-    const closeMenu = () => setOpenMenuId(null);
-    window.addEventListener('click', closeMenu);
-    return () => window.removeEventListener('click', closeMenu);
+    const closeMenus = () => {
+      setOpenMenuId(null);
+      setIsMdMenuOpen(false);
+    };
+    window.addEventListener('click', closeMenus);
+    return () => window.removeEventListener('click', closeMenus);
   }, []);
 
   const handleSaveMemo = async (paperId, textToSave) => {
@@ -1643,10 +1694,25 @@ ${extractedText}`;
     </div>
   );
 
+  const mdMenuItemStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    padding: '6px 10px',
+    border: 'none',
+    backgroundColor: 'transparent',
+    color: '#1f2328',
+    fontSize: '12px',
+    cursor: 'pointer',
+    textAlign: 'left',
+    borderBottom: '1px solid #f0f0f0'
+  };
+
   const memoSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
           {MEMO_COLORS.map(c => (
             <button
@@ -1655,8 +1721,8 @@ ${extractedText}`;
               onClick={() => handleApplyMemoColor(c.code)}
               title={`文字色：${c.label}`}
               style={{
-                width: '16px',
-                height: '16px',
+                width: '15px',
+                height: '15px',
                 borderRadius: '50%',
                 backgroundColor: c.code,
                 border: activeMemoColor === c.code ? '2px solid #007bff' : '1px solid #bbb',
@@ -1668,18 +1734,19 @@ ${extractedText}`;
             />
           ))}
 
-          <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
+          <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
 
+          {/* コンパクトなiPhone風トグルスイッチ（編集 ⇔ 表示） */}
           <button
             type="button"
             role="switch"
             aria-checked={isMemoPreview}
-            onClick={() => setIsMemoPreview(p => !p)}
+            onClick={() => { setIsMdMenuOpen(false); setIsMemoPreview(p => !p); }}
             title={isMemoPreview ? "表示モード（クリックで編集に戻る）" : "編集モード（クリックで数式・Markdownを表示）"}
             style={{
               position: 'relative',
-              width: '46px',
-              height: '24px',
+              width: '36px',
+              height: '20px',
               borderRadius: '999px',
               border: 'none',
               backgroundColor: isMemoPreview ? '#34c759' : '#cbd5e1',
@@ -1694,17 +1761,17 @@ ${extractedText}`;
                 position: 'absolute',
                 top: '2px',
                 left: '2px',
-                width: '20px',
-                height: '20px',
+                width: '16px',
+                height: '16px',
                 borderRadius: '50%',
                 backgroundColor: '#fff',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '11px',
+                fontSize: '9px',
                 lineHeight: 1,
-                transform: isMemoPreview ? 'translateX(22px)' : 'translateX(0)',
+                transform: isMemoPreview ? 'translateX(16px)' : 'translateX(0)',
                 transition: 'transform 0.2s ease'
               }}
             >
@@ -1712,15 +1779,16 @@ ${extractedText}`;
             </span>
           </button>
 
-          <span style={{ width: '1px', height: '14px', backgroundColor: '#ddd', margin: '0 2px' }} />
+          <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
 
+          {/* 文中数式（$...$） */}
           <button
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => handleInsertMath("$")}
+            onClick={() => handleInsertDelim("$")}
             title="文章と同じ行に変数・数式を挿入（$...$）"
             style={{
-              height: '22px',
-              padding: '0 6px',
+              height: '21px',
+              padding: '0 5px',
               border: '1px solid #ccc',
               borderRadius: '4px',
               backgroundColor: '#fff',
@@ -1731,19 +1799,20 @@ ${extractedText}`;
               lineHeight: 1
             }}
           >
-            <span style={{ fontSize: '10px', color: '#888', fontWeight: 'normal' }}>Aa</span>
-            <span style={{ fontSize: '12px', color: '#1a73e8', fontFamily: 'Georgia, serif', fontStyle: 'italic', fontWeight: 'bold' }}>
-              x<sub style={{ fontSize: '8px', fontStyle: 'normal' }}>i</sub>
+            <span style={{ fontSize: '9.5px', color: '#888', fontWeight: 'normal' }}>Aa</span>
+            <span style={{ fontSize: '11.5px', color: '#1a73e8', fontFamily: 'Georgia, serif', fontStyle: 'italic', fontWeight: 'bold' }}>
+              x<sub style={{ fontSize: '7.5px', fontStyle: 'normal' }}>i</sub>
             </span>
           </button>
 
+          {/* 独立数式（$$...$$） */}
           <button
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => handleInsertMath("$$")}
+            onClick={() => handleInsertDelim("$$")}
             title="独立した行に大きな数式を挿入（$$...$$）"
             style={{
-              height: '22px',
-              padding: '0 6px',
+              height: '21px',
+              padding: '0 5px',
               border: '1px solid #ccc',
               borderRadius: '4px',
               backgroundColor: '#fff',
@@ -1754,10 +1823,88 @@ ${extractedText}`;
               lineHeight: 1
             }}
           >
-            <span style={{ fontSize: '10px', color: '#999' }}>[</span>
-            <span style={{ fontSize: '12px', color: '#1f2328', fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>∑</span>
-            <span style={{ fontSize: '10px', color: '#999' }}>]</span>
+            <span style={{ fontSize: '9.5px', color: '#999' }}>[</span>
+            <span style={{ fontSize: '11.5px', color: '#1f2328', fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>∑</span>
+            <span style={{ fontSize: '9.5px', color: '#999' }}>]</span>
           </button>
+
+          {/* 収納式 Markdown・装飾メニュー（Aa▾） */}
+          <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setIsMdMenuOpen(prev => !prev)}
+              title="太字・見出し・箇条書きなどの書式メニュー"
+              style={{
+                height: '21px',
+                padding: '0 5px',
+                border: isMdMenuOpen ? '1px solid #007bff' : '1px solid #ccc',
+                borderRadius: '4px',
+                backgroundColor: isMdMenuOpen ? '#e8f0fe' : '#fff',
+                color: isMdMenuOpen ? '#1a73e8' : '#333',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '1px',
+                lineHeight: 1
+              }}
+            >
+              <span>Aa</span>
+              <span style={{ fontSize: '8px' }}>▾</span>
+            </button>
+
+            {isMdMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '25px',
+                  left: 0,
+                  zIndex: 200,
+                  width: '155px',
+                  backgroundColor: '#fff',
+                  border: '1px solid #ccc',
+                  borderRadius: '6px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                  overflow: 'hidden'
+                }}
+              >
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("bold")} style={mdMenuItemStyle}>
+                  <span><strong>B</strong> 太字</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+B</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("italic")} style={mdMenuItemStyle}>
+                  <span><em>I</em> 斜体</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+I</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("underline")} style={mdMenuItemStyle}>
+                  <span><u>U</u> 下線</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>Ctrl+U</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("strikeThrough")} style={mdMenuItemStyle}>
+                  <span><del>S</del> 打ち消し</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>~~</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("## ")} style={mdMenuItemStyle}>
+                  <span><strong>H</strong> 見出し</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>##</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("- ")} style={mdMenuItemStyle}>
+                  <span>・ 箇条書き</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>-</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("> ")} style={mdMenuItemStyle}>
+                  <span>❝ 引用</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>&gt;</span>
+                </button>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }}>
+                  <span><code>&lt;/&gt;</code> コード</span>
+                  <span style={{ fontSize: '10px', color: '#888' }}>` `</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -1766,7 +1913,7 @@ ${extractedText}`;
           </span>
           <button
             onClick={() => selectedPaper && handleSaveMemo(selectedPaper.id, memoText)}
-            style={{ height: '22px', padding: '0 7px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+            style={{ height: '21px', padding: '0 7px', fontSize: '11px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
           >
             Save
           </button>
