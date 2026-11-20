@@ -1708,199 +1708,198 @@ ${extractedText}`;
 
   const memoSection = (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: isMobile ? '8px 10px' : '8px 12px', backgroundColor: '#fafafa', boxSizing: 'border-box', textAlign: 'left' }}>
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
-          {MEMO_COLORS.map(c => (
-            <button
-              key={c.key}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => handleApplyMemoColor(c.code)}
-              title={`文字色：${c.label}`}
-              style={{
-                width: '15px',
-                height: '15px',
-                borderRadius: '50%',
-                backgroundColor: c.code,
-                border: activeMemoColor === c.code ? '2px solid #007bff' : '1px solid #bbb',
-                boxShadow: activeMemoColor === c.code ? '0 0 0 1px #fff inset' : 'none',
-                cursor: 'pointer',
-                padding: 0,
-                flexShrink: 0
-              }}
-            />
-          ))}
-
-          <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
-
-          {/* コンパクトなiPhone風トグルスイッチ（編集 ⇔ 表示） */}
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '13px', marginRight: '1px' }}>📝</span>
+        {MEMO_COLORS.map(c => (
           <button
-            type="button"
-            role="switch"
-            aria-checked={isMemoPreview}
-            onClick={() => { setIsMdMenuOpen(false); setIsMemoPreview(p => !p); }}
-            title={isMemoPreview ? "表示モード（クリックで編集に戻る）" : "編集モード（クリックで数式・Markdownを表示）"}
+            key={c.key}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleApplyMemoColor(c.code)}
+            title={`文字色：${c.label}`}
             style={{
-              position: 'relative',
-              width: '36px',
-              height: '20px',
-              borderRadius: '999px',
-              border: 'none',
-              backgroundColor: isMemoPreview ? '#34c759' : '#cbd5e1',
+              width: '15px',
+              height: '15px',
+              borderRadius: '50%',
+              backgroundColor: c.code,
+              border: activeMemoColor === c.code ? '2px solid #007bff' : '1px solid #bbb',
+              boxShadow: activeMemoColor === c.code ? '0 0 0 1px #fff inset' : 'none',
               cursor: 'pointer',
               padding: 0,
-              transition: 'background-color 0.2s ease',
               flexShrink: 0
             }}
-          >
-            <span
-              style={{
-                position: 'absolute',
-                top: '2px',
-                left: '2px',
-                width: '16px',
-                height: '16px',
-                borderRadius: '50%',
-                backgroundColor: '#fff',
-                boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '9px',
-                lineHeight: 1,
-                transform: isMemoPreview ? 'translateX(16px)' : 'translateX(0)',
-                transition: 'transform 0.2s ease'
-              }}
-            >
-              {isMemoPreview ? "👁️" : "✏️"}
-            </span>
-          </button>
+          />
+        ))}
 
-          <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
+        <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
 
-          {/* 文中数式（$...$） */}
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => handleInsertDelim("$")}
-            title="文章と同じ行に変数・数式を挿入（$...$）"
+        {/* コンパクトなiPhone風トグルスイッチ（編集 ⇔ 表示） */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={isMemoPreview}
+          onClick={() => { setIsMdMenuOpen(false); setIsMemoPreview(p => !p); }}
+          title={isMemoPreview ? "表示モード（クリックで編集に戻る）" : "編集モード（クリックで数式・Markdownを表示）"}
+          style={{
+            position: 'relative',
+            width: '36px',
+            height: '20px',
+            borderRadius: '999px',
+            border: 'none',
+            backgroundColor: isMemoPreview ? '#34c759' : '#cbd5e1',
+            cursor: 'pointer',
+            padding: 0,
+            transition: 'background-color 0.2s ease',
+            flexShrink: 0
+          }}
+        >
+          <span
             style={{
-              height: '21px',
-              padding: '0 5px',
-              border: '1px solid #ccc',
-              borderRadius: '4px',
+              position: 'absolute',
+              top: '2px',
+              left: '2px',
+              width: '16px',
+              height: '16px',
+              borderRadius: '50%',
               backgroundColor: '#fff',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'baseline',
-              gap: '2px',
-              lineHeight: 1
+              boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '9px',
+              lineHeight: 1,
+              transform: isMemoPreview ? 'translateX(16px)' : 'translateX(0)',
+              transition: 'transform 0.2s ease'
             }}
           >
-            <span style={{ fontSize: '9.5px', color: '#888', fontWeight: 'normal' }}>Aa</span>
-            <span style={{ fontSize: '11.5px', color: '#1a73e8', fontFamily: 'Georgia, serif', fontStyle: 'italic', fontWeight: 'bold' }}>
-              x<sub style={{ fontSize: '7.5px', fontStyle: 'normal' }}>i</sub>
-            </span>
-          </button>
+            {isMemoPreview ? "👁️" : "✏️"}
+          </span>
+        </button>
 
-          {/* 独立数式（$$...$$） */}
+        <span style={{ width: '1px', height: '13px', backgroundColor: '#ddd', margin: '0 2px' }} />
+
+        {/* 文中数式（$...$） */}
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => handleInsertDelim("$")}
+          title="文章と同じ行に変数・数式を挿入（$...$）"
+          style={{
+            height: '21px',
+            padding: '0 5px',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+            backgroundColor: '#fff',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'baseline',
+            gap: '2px',
+            lineHeight: 1
+          }}
+        >
+          <span style={{ fontSize: '9.5px', color: '#888', fontWeight: 'normal' }}>Aa</span>
+          <span style={{ fontSize: '11.5px', color: '#1a73e8', fontFamily: 'Georgia, serif', fontStyle: 'italic', fontWeight: 'bold' }}>
+            x<sub style={{ fontSize: '7.5px', fontStyle: 'normal' }}>i</sub>
+          </span>
+        </button>
+
+        {/* 独立数式（$$...$$） */}
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => handleInsertDelim("$$")}
+          title="独立した行に大きな数式を挿入（$$...$$）"
+          style={{
+            height: '21px',
+            padding: '0 5px',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+            backgroundColor: '#fff',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '2px',
+            lineHeight: 1
+          }}
+        >
+          <span style={{ fontSize: '9.5px', color: '#999' }}>[</span>
+          <span style={{ fontSize: '11.5px', color: '#1f2328', fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>∑</span>
+          <span style={{ fontSize: '9.5px', color: '#999' }}>]</span>
+        </button>
+
+        {/* 収納式 Markdown・装飾メニュー（Aa▾：右揃え2列グリッド） */}
+        <div onClick={(e) => e.stopPropagation()}>
           <button
+            type="button"
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => handleInsertDelim("$$")}
-            title="独立した行に大きな数式を挿入（$$...$$）"
+            onClick={() => setIsMdMenuOpen(prev => !prev)}
+            title="太字・見出し・箇条書きなどの書式メニュー"
             style={{
               height: '21px',
               padding: '0 5px',
-              border: '1px solid #ccc',
+              border: isMdMenuOpen ? '1px solid #007bff' : '1px solid #ccc',
               borderRadius: '4px',
-              backgroundColor: '#fff',
+              backgroundColor: isMdMenuOpen ? '#e8f0fe' : '#fff',
+              color: isMdMenuOpen ? '#1a73e8' : '#333',
+              fontSize: '11px',
+              fontWeight: 'bold',
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '2px',
+              gap: '1px',
               lineHeight: 1
             }}
           >
-            <span style={{ fontSize: '9.5px', color: '#999' }}>[</span>
-            <span style={{ fontSize: '11.5px', color: '#1f2328', fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>∑</span>
-            <span style={{ fontSize: '9.5px', color: '#999' }}>]</span>
+            <span>Aa</span>
+            <span style={{ fontSize: '8px' }}>▾</span>
           </button>
 
-          {/* 収納式 Markdown・装飾メニュー（Aa▾：右揃え2列グリッド） */}
-          <div onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setIsMdMenuOpen(prev => !prev)}
-              title="太字・見出し・箇条書きなどの書式メニュー"
+          {isMdMenuOpen && (
+            <div
               style={{
-                height: '21px',
-                padding: '0 5px',
-                border: isMdMenuOpen ? '1px solid #007bff' : '1px solid #ccc',
-                borderRadius: '4px',
-                backgroundColor: isMdMenuOpen ? '#e8f0fe' : '#fff',
-                color: isMdMenuOpen ? '#1a73e8' : '#333',
-                fontSize: '11px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '1px',
-                lineHeight: 1
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                marginTop: '4px',
+                zIndex: 200,
+                width: '210px',
+                maxWidth: '100%',
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                backgroundColor: '#fff',
+                border: '1px solid #ccc',
+                borderRadius: '6px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
+                overflow: 'hidden'
               }}
             >
-              <span>Aa</span>
-              <span style={{ fontSize: '8px' }}>▾</span>
-            </button>
-
-            {isMdMenuOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: '100%',
-                  right: 0,
-                  marginTop: '4px',
-                  zIndex: 200,
-                  width: '210px',
-                  maxWidth: '100%',
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  backgroundColor: '#fff',
-                  border: '1px solid #ccc',
-                  borderRadius: '6px',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
-                  overflow: 'hidden'
-                }}
-              >
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("bold")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+B">
-                  <span><strong>B</strong> 太字</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("italic")} style={mdMenuItemStyle} title="Ctrl+I">
-                  <span><em>I</em> 斜体</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("underline")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+U">
-                  <span><u>U</u> 下線</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("strikeThrough")} style={mdMenuItemStyle} title="~~打ち消し~~">
-                  <span><del>S</del> 取消</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("## ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="## 見出し">
-                  <span><strong>H</strong> 見出し</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("- ")} style={mdMenuItemStyle} title="- 箇条書き">
-                  <span>・ 箇条書</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("> ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0', borderBottom: 'none' }} title="> 引用">
-                  <span>❝ 引用</span>
-                </button>
-                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }} title="`コード`">
-                  <span><code>{"</>"}</code> コード</span>
-                </button>
-              </div>
-            )}
-          </div>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("bold")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+B">
+                <span><strong>B</strong> 太字</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("italic")} style={mdMenuItemStyle} title="Ctrl+I">
+                <span><em>I</em> 斜体</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("underline")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="Ctrl+U">
+                <span><u>U</u> 下線</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleApplyRichCommand("strikeThrough")} style={mdMenuItemStyle} title="~~打ち消し~~">
+                <span><del>S</del> 取消</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("## ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0' }} title="## 見出し">
+                <span><strong>H</strong> 見出し</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("- ")} style={mdMenuItemStyle} title="- 箇条書き">
+                <span>・ 箇条書</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertPrefix("> ")} style={{ ...mdMenuItemStyle, borderRight: '1px solid #f0f0f0', borderBottom: 'none' }} title="> 引用">
+                <span>❝ 引用</span>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => handleInsertDelim("`")} style={{ ...mdMenuItemStyle, borderBottom: 'none' }} title="`コード`">
+                <span><code>{"</>"}</code> コード</span>
+              </button>
+            </div>
+          )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+        {/* Saveボタン（同じ行の右端に自動で収まる） */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginLeft: 'auto' }}>
           <span style={{ fontSize: '11px', color: memoStatus === '✓' ? '#28a745' : '#888', minWidth: '10px', textAlign: 'right' }}>
             {memoStatus}
           </span>
