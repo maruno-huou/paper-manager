@@ -128,7 +128,7 @@ const sanitizeInlineStyle = (styleStr = "") => {
     const prop = propRaw.trim().toLowerCase();
     const val = valRaw.trim();
     if (["color", "font-weight", "font-style", "text-decoration", "text-decoration-line"].includes(prop)) {
-      if (!/[<>()]|url|expression/i.test(val)) {
+      if (!/[<>]|url\s*\(|expression\s*\(/i.test(val)) {
         allowed.push(`${prop}:${val}`);
       }
     }
