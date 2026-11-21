@@ -88,12 +88,12 @@ const escapeHtml = (str = "") =>
 
 const decodeEntities = (str = "") =>
   str
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/&/g, "&")
-    .replace(/"/g, '"')
-    .replace(/'/g, "'")
-    .replace(/ /g, " ");
+    .replace(new RegExp("&" + "lt;", "g"), "<")
+    .replace(new RegExp("&" + "gt;", "g"), ">")
+    .replace(new RegExp("&" + "amp;", "g"), "&")
+    .replace(new RegExp("&" + "quot;", "g"), '"')
+    .replace(new RegExp("&" + "#39;", "g"), "'")
+    .replace(new RegExp("&" + "nbsp;", "g"), " ");
 
 const normalizeTeX = (expr = "") =>
   expr
@@ -235,6 +235,8 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
     if (inOl) { out.push("</ol>"); inOl = false; }
   };
 
+  const bqRegex = new RegExp("^((?:@@STY\\d+@@)*)\\s*&" + "gt;\\s?(.*)$");
+
   for (const rawLine of lines) {
     const trimmed = rawLine.trim();
 
@@ -260,7 +262,7 @@ const renderMarkdownAndMathHtml = (rawInput = "", { preserveColors = false } = {
       continue;
     }
 
-    const bqMatch = rawLine.match(/^((?:@@STY\d+@@)*)\s*>\s?(.*)$/);
+    const bqMatch = rawLine.match(bqRegex);
     if (bqMatch) {
       closeLists();
       out.push(`<div style="border-left:3px solid #cbd5e1;padding-left:7px;margin:2px 0;color:#555;">${bqMatch[1]}${bqMatch[2]}</div>`);
