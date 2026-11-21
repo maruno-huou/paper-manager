@@ -28,7 +28,7 @@
 
 1. リポジトリをクローンして依存パッケージをインストール
    ```bash
-   git clone [https://github.com/maruno-huou/simple-paper-manager.git](https://github.com/maruno-huou/simple-paper-manager.git)
+   git clone https://github.com/maruno-huou/simple-paper-manager.git
    cd simple-paper-manager
    npm install
    ```
