@@ -79,7 +79,7 @@ The app launches in **Demo Mode** by default with 3 sample papers, allowing you 
 
 1. Clone the repository and install dependencies
    ```bash
-   git clone [https://github.com/maruno-huou/simple-paper-manager.git](https://github.com/maruno-huou/simple-paper-manager.git)
+   git clone https://github.com/maruno-huou/simple-paper-manager.git
    cd simple-paper-manager
    npm install
    ```
